@@ -1,8 +1,10 @@
 #include <array>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <vector>
+
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
 
