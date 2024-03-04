@@ -180,15 +180,17 @@ InputData parseInput(string &inputPath) {
 }
 
 bool Plane::intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d, float &distance) {
-    glm::vec3 no = this->rotation * (o - this->position);
-    glm::vec3 nd = this->rotation * d;
+    glm::quat conj = glm::conjugate(this->rotation);
+    glm::vec3 no = conj * (o - this->position);
+    glm::vec3 nd = conj * d;
     distance = -glm::dot(no, this->normal) / glm::dot(nd, this->normal);
     return distance > 0;
 }
 
 bool Ellipsoid::intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d, float &distance) {
-    glm::vec3 no = this->rotation * (o - this->position);
-    glm::vec3 nd = this->rotation * d;
+    glm::quat conj = glm::conjugate(this->rotation);
+    glm::vec3 no = conj * (o - this->position);
+    glm::vec3 nd = conj * d;
 
     glm::vec3 ndr = nd / this->radius;
     glm::vec3 nor = no / this->radius;
@@ -224,8 +226,9 @@ bool Ellipsoid::intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d, float
 }
 
 bool Box::intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d, float &distance) {
-    glm::vec3 no = this->rotation * (o - this->position);
-    glm::vec3 nd = this->rotation * d;
+    glm::quat conj = glm::conjugate(this->rotation);
+    glm::vec3 no = conj * (o - this->position);
+    glm::vec3 nd = conj * d;
 
     glm::vec3 t1 = (this->size - no) / nd;
     glm::vec3 t2 = (-this->size - no) / nd;
