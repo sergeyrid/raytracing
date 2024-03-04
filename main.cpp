@@ -1,4 +1,5 @@
 #include <array>
+#include <ctime>
 #include <fstream>
 #include <iostream>
 #include <memory>
@@ -499,13 +500,21 @@ SceneFloat generateScene(const InputData &inputData) {
     SceneFloat scene(inputData.width, inputData.height);
     for (uint32_t i = 0; i < inputData.height; ++i) {
         for (uint32_t j = 0; j < inputData.width; ++j) {
-            scene.data.emplace_back(generatePixel(j, i, inputData));
+            if (j % 4 != 0) {
+                scene.data.push_back(scene.data.back());
+            } else if (i % 4 != 0) {
+                scene.data.push_back(scene.data[scene.data.size() - inputData.width]);
+            } else {
+                scene.data.push_back(generatePixel(j, i, inputData));
+            }
         }
     }
     return scene;
 }
 
 int main(int, char *argv[]) {
+    clock_t start = clock();
+
     string inputPath = argv[1];
     string outputPath = argv[2];
 
@@ -513,5 +522,7 @@ int main(int, char *argv[]) {
     SceneFloat scene = generateScene(inputData);
 
     printImage(scene, outputPath);
+
+    cout << "Finished after " << float(clock() - start) / float(CLOCKS_PER_SEC) << "s";
     return 0;
 }
