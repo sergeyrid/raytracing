@@ -155,14 +155,6 @@ SceneInt sceneFloatToInt(SceneFloat &scene) {
     return sceneInt;
 }
 
-SceneFloat sceneIntToFloat(SceneInt &scene) {
-    SceneFloat sceneFloat(scene.width, scene.height);
-    for (auto &pixel: scene.data) {
-        sceneFloat.data.push_back(colorIntToFloat(pixel));
-    }
-    return sceneFloat;
-}
-
 void printImage(SceneFloat &scene, string &outputPath) {
     SceneInt sceneInt = sceneFloatToInt(scene);
     ofstream outputFile(outputPath);
@@ -401,7 +393,7 @@ glm::vec3 getReflectedLight(const Intersection &intersection, const InputData &i
 
 glm::vec3 getLight(const Intersection &intersection, const Light &light, const InputData &inputData) {
     glm::vec3 lightDirection;
-    float r = 0.;
+    float r;
     if (light.isDirected) {
         lightDirection = light.direction;
     } else {
@@ -410,6 +402,11 @@ glm::vec3 getLight(const Intersection &intersection, const Light &light, const I
     }
     lightDirection = glm::normalize(lightDirection);
 
+    float ln = glm::dot(lightDirection, intersection.normal);
+    if (ln < 0) {
+        return {0., 0., 0.};
+    }
+
     Intersection shadowIntersection = intersectScene(
             intersection.p + EPS * lightDirection, lightDirection, inputData);
     if (shadowIntersection.isIntersected &&
@@ -417,10 +414,7 @@ glm::vec3 getLight(const Intersection &intersection, const Light &light, const I
         return {0., 0., 0.};
     }
 
-    glm::vec3 color = intersection.color;
-
-    color *= glm::dot(lightDirection, intersection.normal);
-    color = light.intensity * color;
+    glm::vec3 color = intersection.color * ln * light.intensity;
     if (!light.isDirected) {
         color /= glm::dot(light.attenuation, glm::vec3 {1.f, r, r * r});
     }
@@ -428,7 +422,7 @@ glm::vec3 getLight(const Intersection &intersection, const Light &light, const I
     return color;
 }
 
-glm::vec3 applyLightDiffuser(const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth) {
+glm::vec3 applyLightDiffuser(const Intersection &intersection, const InputData &inputData) {
     glm::vec3 color = intersection.color;
     color *= inputData.ambientLight;
     for (auto &light: inputData.lights) {
@@ -475,7 +469,7 @@ glm::vec3 applyLight(const Intersection &intersection, const InputData &inputDat
     }
     glm::vec3 color{0., 0., 0.};
     if (intersection.material == Material::DIFFUSER) {
-        color = applyLightDiffuser(intersection, inputData, rayDepth);
+        color = applyLightDiffuser(intersection, inputData);
     } else if (intersection.material == Material::METALLIC && rayDepth > 0) {
         color = applyLightMetallic(intersection, inputData, rayDepth);
     } else if (intersection.material == Material::DIELECTRIC && rayDepth > 0) {
@@ -502,8 +496,6 @@ SceneFloat generateScene(const InputData &inputData) {
         for (uint32_t j = 0; j < inputData.width; ++j) {
             if (j % 2 != 0) {
                 scene.data.push_back(scene.data.back());
-            } else if (i % 2 != 0) {
-                scene.data.push_back(scene.data[scene.data.size() - inputData.width]);
             } else {
                 scene.data.push_back(generatePixel(j, i, inputData));
             }
