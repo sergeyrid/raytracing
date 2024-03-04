@@ -500,9 +500,9 @@ SceneFloat generateScene(const InputData &inputData) {
     SceneFloat scene(inputData.width, inputData.height);
     for (uint32_t i = 0; i < inputData.height; ++i) {
         for (uint32_t j = 0; j < inputData.width; ++j) {
-            if (j % 4 != 0) {
+            if (j % 2 != 0) {
                 scene.data.push_back(scene.data.back());
-            } else if (i % 4 != 0) {
+            } else if (i % 2 != 0) {
                 scene.data.push_back(scene.data[scene.data.size() - inputData.width]);
             } else {
                 scene.data.push_back(generatePixel(j, i, inputData));
