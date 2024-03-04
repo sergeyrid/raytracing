@@ -1,0 +1,1 @@
+./build/raytracing $1 $2
