@@ -190,7 +190,7 @@ InputData parseInput(string &inputPath) {
         } else if (command == "CAMERA_FOV_X") {
             float fovX;
             inputFile >> fovX;
-            inputData.cameraFovTan.x = tan(fovX / 2);
+            inputData.cameraFovTan.x = glm::tan(fovX / 2);
         } else if (command == "NEW_PRIMITIVE" && lastPrimitive != nullptr) {
             inputData.primitives.push_back(lastPrimitive);
             lastPrimitive = nullptr;
@@ -268,25 +268,19 @@ Intersection Ellipsoid::intersectPrimitive(const glm::vec3 &o, const glm::vec3 &
     glm::vec3 nor = no / this->radius;
 
     float a = glm::dot(ndr, ndr);
-    float b = 2 * glm::dot(nor, ndr);
-    float c = glm::dot(nor, nor) - 1;
-
-    if (a < 0) {
-        a = -a;
-        b = -b;
-        c = -c;
-    }
+    float b = glm::dot(nor, ndr) / a;
+    float c = (glm::dot(nor, nor) - 1) / a;
 
     Intersection intersection;
 
-    float discr = b * b - 4 * a * c;
+    float discr = 4 * b * b - 4 * c;
     if (discr < 0) {
         return intersection;
     }
-    float sqrtDiscr = sqrt(discr);
+    float sqrtDiscr = glm::sqrt(discr) / 2;
 
-    float mind = (-b - sqrtDiscr) / (2 * a);
-    float maxd = (-b + sqrtDiscr) / (2 * a);
+    float mind = -b - sqrtDiscr;
+    float maxd = -b + sqrtDiscr;
 
     if (mind < 0 && maxd > 0) {
         intersection.t = maxd;
@@ -442,7 +436,7 @@ glm::vec3 applyLightDielectric(const Intersection &intersection, const InputData
     }
     float n12 = n1 / n2;
     float nl = intersection.nl;
-    float s = n12 * sqrt(1.f - nl * nl);
+    float s = n12 * glm::sqrt(1.f - nl * nl);
 
     if (s > 1.f) {
         return reflectedColor;
@@ -452,7 +446,7 @@ glm::vec3 applyLightDielectric(const Intersection &intersection, const InputData
     r0 *= r0;
     float r = r0 + (1.f - r0) * powf((1.f - nl), 5);
 
-    glm::vec3 rd = n12 * intersection.d + (n12 * nl - sqrt(1 - s * s)) * intersection.normal;
+    glm::vec3 rd = n12 * intersection.d + (n12 * nl - glm::sqrt(1 - s * s)) * intersection.normal;
     rd = glm::normalize(rd);
     Intersection refractedIntersection = intersectScene(
             intersection.p - EPS * intersection.normal, rd, inputData);
