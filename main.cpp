@@ -444,7 +444,9 @@ glm::vec3 applyLightDielectric(const Intersection &intersection, const InputData
 
     float r0 = (n1 - n2) / (n1 + n2);
     r0 *= r0;
-    float r = r0 + (1.f - r0) * powf((1.f - nl), 5);
+    float mnl = 1.f - nl;
+    float mnlsq = mnl * mnl;
+    float r = r0 + (1.f - r0) * mnlsq * mnlsq * mnl;
 
     glm::vec3 rd = n12 * intersection.d + (n12 * nl - glm::sqrt(1 - s * s)) * intersection.normal;
     rd = glm::normalize(rd);
@@ -482,7 +484,7 @@ glm::vec3 generatePixel(uint32_t px, uint32_t py, const InputData &inputData) {
     glm::vec3 color = applyLight(intersection, inputData, inputData.rayDepth);
     color = aces_tonemap(color);
     float p = 1.f / 2.2f;
-    color = {powf(color.x, p), powf(color.y, p), powf(color.z, p)};
+    color = {glm::pow(color.x, p), glm::pow(color.y, p), glm::pow(color.z, p)};
     return color;
 }
 
