@@ -11,7 +11,7 @@
 
 using namespace std;
 
-const float EPS = 0.001f;
+const float EPS = 0.0001f;
 
 struct ColorInt {
     uint8_t red;
