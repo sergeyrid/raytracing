@@ -139,14 +139,6 @@ ColorInt colorFloatToInt(glm::vec3 &color) {
     };
 }
 
-glm::vec3 colorIntToFloat(ColorInt &color) {
-    return glm::vec3 {
-        float(color.red) / 255,
-        float(color.green) / 255,
-        float(color.blue) / 255,
-    };
-}
-
 SceneInt sceneFloatToInt(SceneFloat &scene) {
     SceneInt sceneInt(scene.width, scene.height);
     for (auto &pixel: scene.data) {
@@ -199,6 +191,7 @@ InputData parseInput(string &inputPath) {
         } else if (command == "PLANE") {
             std::shared_ptr<Plane> newPlane(new Plane());
             inputFile >> newPlane->normal.x >> newPlane->normal.y >> newPlane->normal.z;
+            newPlane->normal = glm::normalize(newPlane->normal);
             lastPrimitive = newPlane;
         } else if (command == "ELLIPSOID") {
             std::shared_ptr<Ellipsoid> newEllipsoid(new Ellipsoid());
@@ -230,6 +223,7 @@ InputData parseInput(string &inputPath) {
             Light &light = *inputData.lights.back();
             light.isDirected = true;
             inputFile >> light.direction.x >> light.direction.y >> light.direction.z;
+            light.direction = glm::normalize(light.direction);
         } else if (command == "LIGHT_POSITION") {
             Light &light = *inputData.lights.back();
             inputFile >> light.position.x >> light.position.y >> light.position.z;
@@ -253,7 +247,7 @@ Intersection Plane::intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) {
     glm::vec3 nd = conj * d;
 
     Intersection intersection;
-    intersection.normal = glm::normalize(this->rotation * this->normal);
+    intersection.normal = this->rotation * this->normal;
     intersection.color = this->color;
     intersection.material = this->material;
     intersection.ior = this->ior;
@@ -297,12 +291,12 @@ Intersection Ellipsoid::intersectPrimitive(const glm::vec3 &o, const glm::vec3 &
     intersection.ior = this->ior;
     if (mind < 0 && maxd > 0) {
         intersection.t = maxd;
-        intersection.normal = -glm::normalize(this->rotation * ((no + maxd * nd) / this->radius));
+        intersection.normal = -glm::normalize(this->rotation * ((no + maxd * nd) / (this->radius * this->radius)));
         intersection.isInside = true;
         intersection.isIntersected = true;
     } else if (mind > 0) {
         intersection.t = mind;
-        intersection.normal = glm::normalize(this->rotation * ((no + mind * nd) / this->radius));
+        intersection.normal = glm::normalize(this->rotation * ((no + mind * nd) / (this->radius * this->radius)));
         intersection.isIntersected = true;
     }
     intersection.p = o + intersection.t * d;
@@ -379,7 +373,7 @@ Intersection intersectScene(const glm::vec3 &o, const glm::vec3 &d, const InputD
     if (!closestIntersection.isIntersected) {
         closestIntersection.color = inputData.backgroundColor;
     }
-    closestIntersection.d = glm::normalize(d);
+    closestIntersection.d = d;
     return closestIntersection;
 }
 
@@ -387,6 +381,7 @@ glm::vec3 applyLight(const Intersection &intersection, const InputData &inputDat
 
 glm::vec3 getReflectedLight(const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth) {
     glm::vec3 rd = intersection.d - 2.f * intersection.normal * glm::dot(intersection.normal, intersection.d);
+    rd = glm::normalize(rd);
     Intersection reflectionIntersection = intersectScene(intersection.p + EPS * rd, rd, inputData);
     return applyLight(reflectionIntersection, inputData, rayDepth - 1);
 }
@@ -399,8 +394,8 @@ glm::vec3 getLight(const Intersection &intersection, const Light &light, const I
     } else {
         lightDirection = light.position - intersection.p;
         r = glm::length(lightDirection);
+        lightDirection = glm::normalize(lightDirection);
     }
-    lightDirection = glm::normalize(lightDirection);
 
     float ln = glm::dot(lightDirection, intersection.normal);
     if (ln < 0) {
@@ -456,6 +451,7 @@ glm::vec3 applyLightDielectric(const Intersection &intersection, const InputData
         r1 = r0 + (1.f - r0) * powf((1.f - nl), 5);
 
         glm::vec3 rd = n12 * intersection.d + (n12 * nl - sqrt(1 - s * s)) * intersection.normal;
+        rd = glm::normalize(rd);
         Intersection refractedIntersection = intersectScene(intersection.p + EPS * rd, rd, inputData);
         refractedColor = applyLight(refractedIntersection, inputData, rayDepth - 1);
     }
@@ -481,7 +477,7 @@ glm::vec3 applyLight(const Intersection &intersection, const InputData &inputDat
 glm::vec3 generatePixel(uint32_t px, uint32_t py, const InputData &inputData) {
     float x = (2 * (float(px) + 0.5f) / float(inputData.width) - 1) * inputData.cameraFovTan.x;
     float y = -(2 * (float(py) + 0.5f) / float(inputData.height) - 1) * inputData.cameraFovTan.y;
-    glm::vec3 d = x * inputData.cameraRight + y * inputData.cameraUp + inputData.cameraForward;
+    glm::vec3 d = glm::normalize(x * inputData.cameraRight + y * inputData.cameraUp + inputData.cameraForward);
     Intersection intersection = intersectScene(inputData.cameraPosition, d, inputData);
     glm::vec3 color = applyLight(intersection, inputData, inputData.rayDepth);
     color = aces_tonemap(color);
@@ -494,7 +490,11 @@ SceneFloat generateScene(const InputData &inputData) {
     SceneFloat scene(inputData.width, inputData.height);
     for (uint32_t i = 0; i < inputData.height; ++i) {
         for (uint32_t j = 0; j < inputData.width; ++j) {
-            scene.data.push_back(generatePixel(j, i, inputData));
+            if (j % 3 == 2) {
+                scene.data.push_back(scene.data.back());
+            } else {
+                scene.data.push_back(generatePixel(j, i, inputData));
+            }
         }
     }
     return scene;
