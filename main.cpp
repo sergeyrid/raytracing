@@ -382,7 +382,8 @@ glm::vec3 applyLight(const Intersection &intersection, const InputData &inputDat
 glm::vec3 getReflectedLight(const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth) {
     glm::vec3 rd = intersection.d - 2.f * intersection.normal * glm::dot(intersection.normal, intersection.d);
     rd = glm::normalize(rd);
-    Intersection reflectionIntersection = intersectScene(intersection.p + EPS * rd, rd, inputData);
+    Intersection reflectionIntersection = intersectScene(
+            intersection.p + EPS * intersection.normal, rd, inputData);
     return applyLight(reflectionIntersection, inputData, rayDepth - 1);
 }
 
@@ -403,7 +404,7 @@ glm::vec3 getLight(const Intersection &intersection, const Light &light, const I
     }
 
     Intersection shadowIntersection = intersectScene(
-            intersection.p + EPS * lightDirection, lightDirection, inputData);
+            intersection.p + EPS * intersection.normal, lightDirection, inputData);
     if (shadowIntersection.isIntersected &&
             (light.isDirected || glm::length(shadowIntersection.p - intersection.p) < r)) {
         return {0., 0., 0.};
@@ -439,24 +440,29 @@ glm::vec3 applyLightDielectric(const Intersection &intersection, const InputData
         n1 = n2;
         n2 = 1.;
     }
-    float nl = -glm::dot(intersection.normal, intersection.d);
     float n12 = n1 / n2;
+    float nl = -glm::dot(intersection.normal, intersection.d);
     float s = n12 * sqrt(1.f - nl * nl);
 
     glm::vec3 refractedColor{0., 0., 0.};
-    float r1 = 1.;
+    float r = 1.;
     if (s <= 1.f) {
         float r0 = (n1 - n2) / (n1 + n2);
         r0 *= r0;
-        r1 = r0 + (1.f - r0) * powf((1.f - nl), 5);
+        r = r0 + (1.f - r0) * powf((1.f - nl), 5);
 
         glm::vec3 rd = n12 * intersection.d + (n12 * nl - sqrt(1 - s * s)) * intersection.normal;
         rd = glm::normalize(rd);
-        Intersection refractedIntersection = intersectScene(intersection.p + EPS * rd, rd, inputData);
+        Intersection refractedIntersection = intersectScene(
+                intersection.p - EPS * intersection.normal, rd, inputData);
         refractedColor = applyLight(refractedIntersection, inputData, rayDepth - 1);
+
+        if (intersection.isInside) {
+            refractedColor *= intersection.color;
+        }
     }
 
-    return (1.f - r1) * intersection.color * refractedColor + r1 * reflectedColor;
+    return (1.f - r) * refractedColor + r * reflectedColor;
 }
 
 glm::vec3 applyLight(const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth) {
