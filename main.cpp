@@ -444,22 +444,22 @@ glm::vec3 applyLightDielectric(const Intersection &intersection, const InputData
     float nl = -glm::dot(intersection.normal, intersection.d);
     float s = n12 * sqrt(1.f - nl * nl);
 
-    glm::vec3 refractedColor{0., 0., 0.};
-    float r = 1.;
-    if (s <= 1.f) {
-        float r0 = (n1 - n2) / (n1 + n2);
-        r0 *= r0;
-        r = r0 + (1.f - r0) * powf((1.f - nl), 5);
+    if (s > 1.f) {
+        return reflectedColor;
+    }
 
-        glm::vec3 rd = n12 * intersection.d + (n12 * nl - sqrt(1 - s * s)) * intersection.normal;
-        rd = glm::normalize(rd);
-        Intersection refractedIntersection = intersectScene(
-                intersection.p - EPS * intersection.normal, rd, inputData);
-        refractedColor = applyLight(refractedIntersection, inputData, rayDepth - 1);
+    float r0 = (n1 - n2) / (n1 + n2);
+    r0 *= r0;
+    float r = r0 + (1.f - r0) * powf((1.f - nl), 5);
 
-        if (intersection.isInside) {
-            refractedColor *= intersection.color;
-        }
+    glm::vec3 rd = n12 * intersection.d + (n12 * nl - sqrt(1 - s * s)) * intersection.normal;
+    rd = glm::normalize(rd);
+    Intersection refractedIntersection = intersectScene(
+            intersection.p - EPS * intersection.normal, rd, inputData);
+    glm::vec3 refractedColor = applyLight(refractedIntersection, inputData, rayDepth - 1);
+
+    if (!intersection.isInside) {
+        refractedColor *= intersection.color;
     }
 
     return (1.f - r) * refractedColor + r * reflectedColor;
