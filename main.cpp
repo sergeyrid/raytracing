@@ -58,6 +58,7 @@ struct Intersection {
     float t = 0.;
     glm::vec3 p{0., 0., 0.};
     glm::vec3 d{0., 0., 0.};
+    float nl = 0.;
 
     glm::vec3 normal{0., 0., 0.};
     glm::vec3 color{0., 0., 0.};
@@ -68,6 +69,7 @@ struct Intersection {
 struct Primitive {
     glm::vec3 position{0., 0., 0.};
     glm::quat rotation{1., 0., 0., 0.};
+    glm::quat conjRotation{1., 0., 0., 0.};
     glm::vec3 color{0., 0., 0.};
     Material material = Material::DIFFUSER;
     float ior = 1.;
@@ -83,6 +85,7 @@ struct Plane : Primitive {
 
 struct Ellipsoid : Primitive {
     glm::vec3 radius{1., 1., 1.};
+    glm::vec3 radiusSq{1., 1., 1.};
 
     Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) override;
 };
@@ -169,6 +172,9 @@ InputData parseInput(string &inputPath) {
             inputFile >> inputData.width >> inputData.height;
         } else if (command == "RAY_DEPTH") {
             inputFile >> inputData.rayDepth;
+            if (inputData.rayDepth > 0) {
+                --inputData.rayDepth;
+            }
         } else if (command == "BG_COLOR") {
             inputFile >> inputData.backgroundColor.x >> inputData.backgroundColor.y >> inputData.backgroundColor.z;
         } else if (command == "AMBIENT_LIGHT") {
@@ -196,6 +202,7 @@ InputData parseInput(string &inputPath) {
         } else if (command == "ELLIPSOID") {
             std::shared_ptr<Ellipsoid> newEllipsoid(new Ellipsoid());
             inputFile >> newEllipsoid->radius.x >> newEllipsoid->radius.y >> newEllipsoid->radius.z;
+            newEllipsoid->radiusSq = newEllipsoid->radius * newEllipsoid->radius;
             lastPrimitive = newEllipsoid;
         } else if (command == "BOX") {
             std::shared_ptr<Box> newBox(new Box());
@@ -206,6 +213,7 @@ InputData parseInput(string &inputPath) {
         } else if (command == "ROTATION") {
             inputFile >> lastPrimitive->rotation.x >> lastPrimitive->rotation.y;
             inputFile >> lastPrimitive->rotation.z >> lastPrimitive->rotation.w;
+            lastPrimitive->conjRotation = glm::conjugate(lastPrimitive->rotation);
         } else if (command == "COLOR") {
             inputFile >> lastPrimitive->color.x >> lastPrimitive->color.y >> lastPrimitive->color.z;
         } else if (command == "METALLIC") {
@@ -214,8 +222,8 @@ InputData parseInput(string &inputPath) {
             lastPrimitive->material = Material::DIELECTRIC;
         } else if (command == "IOR") {
             inputFile >> lastPrimitive->ior;
-        }else if (command == "NEW_LIGHT") {
-                inputData.lights.emplace_back(new Light());
+        } else if (command == "NEW_LIGHT") {
+            inputData.lights.emplace_back(new Light());
         } else if (command == "LIGHT_INTENSITY") {
             Light &light = *inputData.lights.back();
             inputFile >> light.intensity.x >> light.intensity.y >> light.intensity.z;
@@ -242,25 +250,19 @@ InputData parseInput(string &inputPath) {
 }
 
 Intersection Plane::intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) {
-    glm::quat conj = glm::conjugate(this->rotation);
-    glm::vec3 no = conj * (o - this->position);
-    glm::vec3 nd = conj * d;
+    glm::vec3 no = this->conjRotation * (o - this->position);
+    glm::vec3 nd = this->conjRotation * d;
 
     Intersection intersection;
     intersection.normal = this->rotation * this->normal;
-    intersection.color = this->color;
-    intersection.material = this->material;
-    intersection.ior = this->ior;
     intersection.t = -glm::dot(no, this->normal) / glm::dot(nd, this->normal);
-    intersection.p = o + intersection.t * d;
     intersection.isIntersected = intersection.t > 0;
     return intersection;
 }
 
 Intersection Ellipsoid::intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) {
-    glm::quat conj = glm::conjugate(this->rotation);
-    glm::vec3 no = conj * (o - this->position);
-    glm::vec3 nd = conj * d;
+    glm::vec3 no = this->conjRotation * (o - this->position);
+    glm::vec3 nd = this->conjRotation * d;
 
     glm::vec3 ndr = nd / this->radius;
     glm::vec3 nor = no / this->radius;
@@ -286,27 +288,23 @@ Intersection Ellipsoid::intersectPrimitive(const glm::vec3 &o, const glm::vec3 &
     float mind = (-b - sqrtDiscr) / (2 * a);
     float maxd = (-b + sqrtDiscr) / (2 * a);
 
-    intersection.color = this->color;
-    intersection.material = this->material;
-    intersection.ior = this->ior;
     if (mind < 0 && maxd > 0) {
         intersection.t = maxd;
-        intersection.normal = -glm::normalize(this->rotation * ((no + maxd * nd) / (this->radius * this->radius)));
+        intersection.normal = -glm::normalize(this->rotation * ((no + maxd * nd) / this->radiusSq));
         intersection.isInside = true;
         intersection.isIntersected = true;
     } else if (mind > 0) {
         intersection.t = mind;
-        intersection.normal = glm::normalize(this->rotation * ((no + mind * nd) / (this->radius * this->radius)));
+        intersection.normal = glm::normalize(this->rotation * ((no + mind * nd) / this->radiusSq));
         intersection.isIntersected = true;
     }
-    intersection.p = o + intersection.t * d;
+
     return intersection;
 }
 
 Intersection Box::intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) {
-    glm::quat conj = glm::conjugate(this->rotation);
-    glm::vec3 no = conj * (o - this->position);
-    glm::vec3 nd = conj * d;
+    glm::vec3 no = this->conjRotation * (o - this->position);
+    glm::vec3 nd = this->conjRotation * d;
 
     glm::vec3 t1 = (this->size - no) / nd;
     glm::vec3 t2 = (-this->size - no) / nd;
@@ -321,16 +319,12 @@ Intersection Box::intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) {
     }
 
     intersection.isIntersected = true;
-    intersection.color = this->color;
-    intersection.material = this->material;
-    intersection.ior = this->ior;
     if (d1 < 0) {
         intersection.t = d2;
         intersection.isInside = true;
     } else {
         intersection.t = d1;
     }
-    intersection.p = o + intersection.t * d;
 
     glm::vec3 ps = (no + intersection.t * nd) / this->size;
     glm::vec3 aps {fabs(ps.x), fabs(ps.y), fabs(ps.z)};
@@ -368,19 +362,25 @@ Intersection intersectScene(const glm::vec3 &o, const glm::vec3 &d, const InputD
         if (newIntersection.isIntersected &&
                 (!closestIntersection.isIntersected || newIntersection.t < closestIntersection.t)) {
             closestIntersection = newIntersection;
+            closestIntersection.color = primitive->color;
+            closestIntersection.material = primitive->material;
+            closestIntersection.ior = primitive->ior;
         }
     }
     if (!closestIntersection.isIntersected) {
         closestIntersection.color = inputData.backgroundColor;
+    } else {
+        closestIntersection.d = d;
+        closestIntersection.nl = -glm::dot(closestIntersection.normal, d);
+        closestIntersection.p = o + closestIntersection.t * d;
     }
-    closestIntersection.d = d;
     return closestIntersection;
 }
 
 glm::vec3 applyLight(const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth);
 
 glm::vec3 getReflectedLight(const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth) {
-    glm::vec3 rd = intersection.d - 2.f * intersection.normal * glm::dot(intersection.normal, intersection.d);
+    glm::vec3 rd = intersection.d + 2.f * intersection.normal * intersection.nl;
     rd = glm::normalize(rd);
     Intersection reflectionIntersection = intersectScene(
             intersection.p + EPS * intersection.normal, rd, inputData);
@@ -441,7 +441,7 @@ glm::vec3 applyLightDielectric(const Intersection &intersection, const InputData
         n2 = 1.;
     }
     float n12 = n1 / n2;
-    float nl = -glm::dot(intersection.normal, intersection.d);
+    float nl = intersection.nl;
     float s = n12 * sqrt(1.f - nl * nl);
 
     if (s > 1.f) {
@@ -496,11 +496,7 @@ SceneFloat generateScene(const InputData &inputData) {
     SceneFloat scene(inputData.width, inputData.height);
     for (uint32_t i = 0; i < inputData.height; ++i) {
         for (uint32_t j = 0; j < inputData.width; ++j) {
-            if (j % 3 == 2) {
-                scene.data.push_back(scene.data.back());
-            } else {
-                scene.data.push_back(generatePixel(j, i, inputData));
-            }
+            scene.data.push_back(generatePixel(j, i, inputData));
         }
     }
     return scene;
