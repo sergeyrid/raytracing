@@ -273,11 +273,11 @@ Intersection Ellipsoid::intersectPrimitive(const glm::vec3 &o, const glm::vec3 &
 
     Intersection intersection;
 
-    float discr = 4 * b * b - 4 * c;
+    float discr = b * b - c;
     if (discr < 0) {
         return intersection;
     }
-    float sqrtDiscr = glm::sqrt(discr) / 2;
+    float sqrtDiscr = glm::sqrt(discr);
 
     float mind = -b - sqrtDiscr;
     float maxd = -b + sqrtDiscr;
