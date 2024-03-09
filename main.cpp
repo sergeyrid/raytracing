@@ -3,6 +3,7 @@
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -12,6 +13,7 @@
 using namespace std;
 
 const float EPS = 0.0001f;
+minstd_rand RNG{42};
 
 struct ColorInt {
     uint8_t red;
@@ -51,26 +53,14 @@ enum class Material {
     DIELECTRIC,
 };
 
-struct Intersection {
-    bool isIntersected = false;
-    bool isInside = false;
-
-    float t = 0.;
-    glm::vec3 p{0., 0., 0.};
-    glm::vec3 d{0., 0., 0.};
-    float nl = 0.;
-
-    glm::vec3 normal{0., 0., 0.};
-    glm::vec3 color{0., 0., 0.};
-    Material material = Material::DIFFUSER;
-    float ior = 1.;
-};
+struct Intersection;
 
 struct Primitive {
     glm::vec3 position{0., 0., 0.};
     glm::quat rotation{1., 0., 0., 0.};
     glm::quat conjRotation{1., 0., 0., 0.};
     glm::vec3 color{0., 0., 0.};
+    glm::vec3 emission{0., 0., 0.};
     Material material = Material::DIFFUSER;
     float ior = 1.;
 
@@ -96,20 +86,25 @@ struct Box : Primitive {
     Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) override;
 };
 
-struct Light {
-    glm::vec3 intensity {0., 0., 0.};
-    glm::vec3 direction{0., 0., 0.};
-    glm::vec3 position{0., 0., 0.};
-    glm::vec3 attenuation{0., 0., 0.};
-    bool isDirected = false;
+struct Intersection {
+    bool isIntersected = false;
+    bool isInside = false;
+
+    float t = 0.;
+    glm::vec3 p{0., 0., 0.};
+    glm::vec3 d{0., 0., 0.};
+    float nl = 0.;
+
+    glm::vec3 normal{0., 0., 0.};
+    Primitive *primitive = nullptr;
 };
 
 struct InputData {
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t rayDepth = 0;
+    uint32_t samples = 0;
     glm::vec3 backgroundColor{0., 0., 0.};
-    glm::vec3 ambientLight{0., 0., 0.};
 
     glm::vec3 cameraPosition{0., 0., 0.};
     glm::vec3 cameraRight{1., 0., 0.};
@@ -118,7 +113,6 @@ struct InputData {
     glm::vec2 cameraFovTan{0., 0.};
 
     vector<shared_ptr<Primitive>> primitives;
-    vector<shared_ptr<Light>> lights;
 };
 
 glm::vec3 saturate(const glm::vec3 &color) {
@@ -132,6 +126,16 @@ glm::vec3 aces_tonemap(glm::vec3 const & x) {
     const float d = 0.59f;
     const float e = 0.14f;
     return saturate((x*(a*x+b))/(x*(c*x+d)+e));
+}
+
+float sampleUniform(float a = 0., float b = 1.) {
+    uniform_real_distribution<float> dis{a, b};
+    return dis(RNG);
+}
+
+float sampleNormal(float m = 0., float s = 1.) {
+    normal_distribution<float> dis{m, s};
+    return dis(RNG);
 }
 
 ColorInt colorFloatToInt(glm::vec3 &color) {
@@ -175,10 +179,10 @@ InputData parseInput(string &inputPath) {
             if (inputData.rayDepth > 0) {
                 --inputData.rayDepth;
             }
+        } else if (command == "SAMPLES") {
+            inputFile >> inputData.samples;
         } else if (command == "BG_COLOR") {
             inputFile >> inputData.backgroundColor.x >> inputData.backgroundColor.y >> inputData.backgroundColor.z;
-        } else if (command == "AMBIENT_LIGHT") {
-            inputFile >> inputData.ambientLight.x >> inputData.ambientLight.y >> inputData.ambientLight.z;
         } else if (command == "CAMERA_POSITION") {
                 inputFile >> inputData.cameraPosition.x >> inputData.cameraPosition.y >> inputData.cameraPosition.z;
         } else if (command == "CAMERA_RIGHT") {
@@ -216,28 +220,14 @@ InputData parseInput(string &inputPath) {
             lastPrimitive->conjRotation = glm::conjugate(lastPrimitive->rotation);
         } else if (command == "COLOR") {
             inputFile >> lastPrimitive->color.x >> lastPrimitive->color.y >> lastPrimitive->color.z;
+        } else if (command == "EMISSION") {
+            inputFile >> lastPrimitive->emission.x >> lastPrimitive->emission.y >> lastPrimitive->emission.z;
         } else if (command == "METALLIC") {
             lastPrimitive->material = Material::METALLIC;
         } else if (command == "DIELECTRIC") {
             lastPrimitive->material = Material::DIELECTRIC;
         } else if (command == "IOR") {
             inputFile >> lastPrimitive->ior;
-        } else if (command == "NEW_LIGHT") {
-            inputData.lights.emplace_back(new Light());
-        } else if (command == "LIGHT_INTENSITY") {
-            Light &light = *inputData.lights.back();
-            inputFile >> light.intensity.x >> light.intensity.y >> light.intensity.z;
-        } else if (command == "LIGHT_DIRECTION") {
-            Light &light = *inputData.lights.back();
-            light.isDirected = true;
-            inputFile >> light.direction.x >> light.direction.y >> light.direction.z;
-            light.direction = glm::normalize(light.direction);
-        } else if (command == "LIGHT_POSITION") {
-            Light &light = *inputData.lights.back();
-            inputFile >> light.position.x >> light.position.y >> light.position.z;
-        } else if (command == "LIGHT_ATTENUATION") {
-            Light &light = *inputData.lights.back();
-            inputFile >> light.attenuation.x >> light.attenuation.y >> light.attenuation.z;
         }
     }
     inputFile.close();
@@ -356,14 +346,10 @@ Intersection intersectScene(const glm::vec3 &o, const glm::vec3 &d, const InputD
         if (newIntersection.isIntersected &&
                 (!closestIntersection.isIntersected || newIntersection.t < closestIntersection.t)) {
             closestIntersection = newIntersection;
-            closestIntersection.color = primitive->color;
-            closestIntersection.material = primitive->material;
-            closestIntersection.ior = primitive->ior;
+            closestIntersection.primitive = primitive.get();
         }
     }
-    if (!closestIntersection.isIntersected) {
-        closestIntersection.color = inputData.backgroundColor;
-    } else {
+    if (closestIntersection.isIntersected) {
         closestIntersection.d = d;
         closestIntersection.nl = -glm::dot(closestIntersection.normal, d);
         closestIntersection.p = o + closestIntersection.t * d;
@@ -381,55 +367,29 @@ glm::vec3 getReflectedLight(const Intersection &intersection, const InputData &i
     return applyLight(reflectionIntersection, inputData, rayDepth - 1);
 }
 
-glm::vec3 getLight(const Intersection &intersection, const Light &light, const InputData &inputData) {
-    glm::vec3 lightDirection;
-    float r;
-    if (light.isDirected) {
-        lightDirection = light.direction;
-    } else {
-        lightDirection = light.position - intersection.p;
-        r = glm::length(lightDirection);
-        lightDirection = glm::normalize(lightDirection);
+glm::vec3 applyLightDiffuser(const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth) {
+    float x = sampleNormal();
+    float y = sampleNormal();
+    float z = sampleNormal();
+    glm::vec3 w{x, y, z};
+    w = glm::normalize(w);
+    float wn = glm::dot(w, intersection.normal);
+    if (wn < 0) {
+        w = -w;
+        wn = -wn;
     }
-
-    float ln = glm::dot(lightDirection, intersection.normal);
-    if (ln < 0) {
-        return {0., 0., 0.};
-    }
-
-    Intersection shadowIntersection = intersectScene(
-            intersection.p + EPS * intersection.normal, lightDirection, inputData);
-    if (shadowIntersection.isIntersected &&
-            (light.isDirected || glm::length(shadowIntersection.p - intersection.p) < r)) {
-        return {0., 0., 0.};
-    }
-
-    glm::vec3 color = intersection.color * ln * light.intensity;
-    if (!light.isDirected) {
-        color /= glm::dot(light.attenuation, glm::vec3 {1.f, r, r * r});
-    }
-
-    return color;
-}
-
-glm::vec3 applyLightDiffuser(const Intersection &intersection, const InputData &inputData) {
-    glm::vec3 color = intersection.color;
-    color *= inputData.ambientLight;
-    for (auto &light: inputData.lights) {
-        color += getLight(intersection, *light, inputData);
-    }
-    return color;
+    Intersection nextIntersection = intersectScene(intersection.p + EPS * intersection.normal, w, inputData);
+    glm::vec3 l = applyLight(nextIntersection, inputData, rayDepth - 1);
+    return 2.f * intersection.primitive->color * l * wn + intersection.primitive->emission;
 }
 
 glm::vec3 applyLightMetallic(const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth) {
     glm::vec3 reflectedColor = getReflectedLight(intersection, inputData, rayDepth);
-    return intersection.color * reflectedColor;
+    return intersection.primitive->color * reflectedColor + intersection.primitive->emission;
 }
 
 glm::vec3 applyLightDielectric(const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth) {
-    glm::vec3 reflectedColor = getReflectedLight(intersection, inputData, rayDepth);
-
-    float n1 = 1., n2 = intersection.ior;
+    float n1 = 1., n2 = intersection.primitive->ior;
     if (intersection.isInside) {
         n1 = n2;
         n2 = 1.;
@@ -439,7 +399,7 @@ glm::vec3 applyLightDielectric(const Intersection &intersection, const InputData
     float s = n12 * glm::sqrt(1.f - nl * nl);
 
     if (s > 1.f) {
-        return reflectedColor;
+        return getReflectedLight(intersection, inputData, rayDepth) + intersection.primitive->emission;
     }
 
     float r0 = (n1 - n2) / (n1 + n2);
@@ -448,6 +408,10 @@ glm::vec3 applyLightDielectric(const Intersection &intersection, const InputData
     float mnlsq = mnl * mnl;
     float r = r0 + (1.f - r0) * mnlsq * mnlsq * mnl;
 
+    if (sampleUniform() < r) {
+        return getReflectedLight(intersection, inputData, rayDepth) + intersection.primitive->emission;
+    }
+
     glm::vec3 rd = n12 * intersection.d + (n12 * nl - glm::sqrt(1 - s * s)) * intersection.normal;
     rd = glm::normalize(rd);
     Intersection refractedIntersection = intersectScene(
@@ -455,33 +419,47 @@ glm::vec3 applyLightDielectric(const Intersection &intersection, const InputData
     glm::vec3 refractedColor = applyLight(refractedIntersection, inputData, rayDepth - 1);
 
     if (!intersection.isInside) {
-        refractedColor *= intersection.color;
+        refractedColor *= intersection.primitive->color;
     }
 
-    return (1.f - r) * refractedColor + r * reflectedColor;
+    return refractedColor + intersection.primitive->emission;
 }
 
 glm::vec3 applyLight(const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth) {
     if (!intersection.isIntersected) {
         return inputData.backgroundColor;
     }
+
     glm::vec3 color{0., 0., 0.};
-    if (intersection.material == Material::DIFFUSER) {
-        color = applyLightDiffuser(intersection, inputData);
-    } else if (intersection.material == Material::METALLIC && rayDepth > 0) {
+    if (rayDepth == 0) {
+        return color;
+    }
+
+    if (intersection.primitive->material == Material::DIFFUSER) {
+        color = applyLightDiffuser(intersection, inputData, rayDepth);
+    } else if (intersection.primitive->material == Material::METALLIC) {
         color = applyLightMetallic(intersection, inputData, rayDepth);
-    } else if (intersection.material == Material::DIELECTRIC && rayDepth > 0) {
+    } else if (intersection.primitive->material == Material::DIELECTRIC) {
         color = applyLightDielectric(intersection, inputData, rayDepth);
     }
+
     return color;
 }
 
-glm::vec3 generatePixel(uint32_t px, uint32_t py, const InputData &inputData) {
-    float x = (2 * (float(px) + 0.5f) / float(inputData.width) - 1) * inputData.cameraFovTan.x;
-    float y = -(2 * (float(py) + 0.5f) / float(inputData.height) - 1) * inputData.cameraFovTan.y;
+glm::vec3 generateSample(uint32_t px, uint32_t py, const InputData &inputData) {
+    float x = (2 * (float(px) + sampleUniform()) / float(inputData.width) - 1) * inputData.cameraFovTan.x;
+    float y = -(2 * (float(py) + sampleUniform()) / float(inputData.height) - 1) * inputData.cameraFovTan.y;
     glm::vec3 d = glm::normalize(x * inputData.cameraRight + y * inputData.cameraUp + inputData.cameraForward);
     Intersection intersection = intersectScene(inputData.cameraPosition, d, inputData);
-    glm::vec3 color = applyLight(intersection, inputData, inputData.rayDepth);
+    return applyLight(intersection, inputData, inputData.rayDepth);
+}
+
+glm::vec3 generatePixel(uint32_t px, uint32_t py, const InputData &inputData) {
+    glm::vec3 color{0., 0., 0.};
+    for (uint32_t i = 0; i < inputData.samples; ++i) {
+        color += generateSample(px, py, inputData);
+    }
+    color /= inputData.samples;
     color = aces_tonemap(color);
     float p = 1.f / 2.2f;
     color = {glm::pow(color.x, p), glm::pow(color.y, p), glm::pow(color.z, p)};
