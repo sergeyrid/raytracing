@@ -389,9 +389,10 @@ struct Cosine : Distribution {
 
 struct LightSurface : Distribution {
     const vector<Primitive *> *lights;
+    const Primitive *primitive;
 
-    LightSurface(glm::vec3 x, glm::vec3 n, const vector<Primitive *> *lights)
-            : Distribution(x, n), lights(lights) {}
+    LightSurface(glm::vec3 x, glm::vec3 n, const vector<Primitive *> *lights, const Primitive *primitive)
+            : Distribution(x, n), lights(lights), primitive(primitive) {}
 
     glm::vec3 sample() override {
         int i = int(sampleUniform(0.f, float(lights->size())) - EPS);
@@ -401,6 +402,9 @@ struct LightSurface : Distribution {
     float pdf(glm::vec3 d) override {
         float ps = 0.f;
         for (auto &light: *lights) {
+            if (light == primitive) {
+                continue;
+            }
             ps += light->pdf(x, d);
         }
         if (ps < 0.f || isnan(ps) || isinf(ps)) {
@@ -414,8 +418,8 @@ struct Mix : Distribution {
     Cosine cosine;
     LightSurface lightSurface;
 
-    Mix(glm::vec3 x, glm::vec3 n, const vector<Primitive *> *lights) :
-            Distribution(x, n), cosine(x, n), lightSurface(x, n, lights) {}
+    Mix(glm::vec3 x, glm::vec3 n, const vector<Primitive *> *lights, const Primitive *primitive) :
+            Distribution(x, n), cosine(x, n), lightSurface(x, n, lights, primitive) {}
 
     glm::vec3 sample() override {
         bool c = sampleUniform() < 0.5f;
@@ -427,7 +431,7 @@ struct Mix : Distribution {
     }
 
     float pdf(glm::vec3 d) override {
-        return 0.5f * cosine.pdf(d) + 0.5f * lightSurface.pdf(d);
+        return 0.5f * cosine.pdf(d) + lightSurface.pdf(d);
     }
 };
 
@@ -578,7 +582,7 @@ glm::vec3 applyLightDiffuser(const Intersection &intersection, const InputData &
     if (inputData.lights.empty()) {
         dis = new Cosine{intersection.p, intersection.normal};
     } else {
-        dis = new Mix{intersection.p, intersection.normal, &inputData.lights};
+        dis = new Mix{intersection.p, intersection.normal, &inputData.lights, intersection.primitive};
     }
     glm::vec3 w = dis->sample();
     float p = dis->pdf(w);
