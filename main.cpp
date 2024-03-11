@@ -1,6 +1,7 @@
 #include <array>
 #include <ctime>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <random>
@@ -349,6 +350,22 @@ struct Distribution {
     virtual ~Distribution() = default;
 };
 
+struct Uniform : Distribution {
+    using Distribution::Distribution;
+
+    glm::vec3 sample() override {
+        float x = sampleNormal();
+        float y = sampleNormal();
+        float z = sampleNormal();
+        glm::vec3 d{x, y, z};
+        return glm::normalize(d);
+    }
+
+    float pdf(glm::vec3) override {
+        return glm::four_over_pi<float>();
+    }
+};
+
 struct Cosine : Distribution {
     using Distribution::Distribution;
 
@@ -367,6 +384,50 @@ struct Cosine : Distribution {
             return 0.f;
         }
         return dn * glm::one_over_pi<float>();
+    }
+};
+
+struct LightSurface : Distribution {
+    const vector<Primitive *> *lights;
+
+    LightSurface(glm::vec3 x, glm::vec3 n, const vector<Primitive *> *lights)
+            : Distribution(x, n), lights(lights) {}
+
+    glm::vec3 sample() override {
+        int i = int(sampleUniform(0.f, float(lights->size())) - EPS);
+        return (*lights)[i]->samplePoint() - x;
+    }
+
+    float pdf(glm::vec3 d) override {
+        float ps = 0.f;
+        for (auto &light: *lights) {
+            ps += light->pdf(x, d);
+        }
+        if (ps < 0.f || isnan(ps) || isinf(ps)) {
+            return 0.f;
+        }
+        return ps / float(lights->size());
+    }
+};
+
+struct Mix : Distribution {
+    Cosine cosine;
+    LightSurface lightSurface;
+
+    Mix(glm::vec3 x, glm::vec3 n, const vector<Primitive *> *lights) :
+            Distribution(x, n), cosine(x, n), lightSurface(x, n, lights) {}
+
+    glm::vec3 sample() override {
+        bool c = sampleUniform() < 0.5f;
+        if (c) {
+            return cosine.sample();
+        } else {
+            return lightSurface.sample();
+        }
+    }
+
+    float pdf(glm::vec3 d) override {
+        return 0.5f * cosine.pdf(d) + 0.5f * lightSurface.pdf(d);
     }
 };
 
