@@ -395,7 +395,7 @@ struct LightSurface : Distribution {
 
     glm::vec3 sample() override {
         int i = int(sampleUniform(0.f, float(lights->size())) - EPS);
-        return (*lights)[i]->samplePoint() - x;
+        return glm::normalize((*lights)[i]->samplePoint() - x);
     }
 
     float pdf(glm::vec3 d) override {
@@ -575,7 +575,11 @@ glm::vec3 getReflectedLight(const Intersection &intersection, const InputData &i
 
 glm::vec3 applyLightDiffuser(const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth) {
     Distribution *dis;
-    dis = new Cosine{intersection.p, intersection.normal};
+    if (inputData.lights.empty()) {
+        dis = new Cosine{intersection.p, intersection.normal};
+    } else {
+        dis = new Mix{intersection.p, intersection.normal, &inputData.lights};
+    }
     glm::vec3 w = dis->sample();
     float p = dis->pdf(w);
     delete dis;
