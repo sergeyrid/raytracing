@@ -26,11 +26,9 @@ struct SceneInt {
     uint32_t height;
     vector<ColorInt> data;
 
-    SceneInt(const uint32_t &width, const uint32_t &height) {
-        this->width = width;
-        this->height = height;
-        this->data = vector<ColorInt>();
-        this->data.reserve(width * height);
+    SceneInt(const uint32_t &width, const uint32_t &height) : width(width), height(height) {
+        data = vector<ColorInt>();
+        data.reserve(width * height);
     }
 };
 
@@ -39,11 +37,9 @@ struct SceneFloat {
     uint32_t height;
     vector<glm::vec3> data;
 
-    SceneFloat(const uint32_t &width, const uint32_t &height) {
-        this->width = width;
-        this->height = height;
-        this->data = vector<glm::vec3>();
-        this->data.reserve(width * height);
+    SceneFloat(const uint32_t &width, const uint32_t &height) : width(width), height(height) {
+        data = vector<glm::vec3>();
+        data.reserve(width * height);
     }
 };
 
@@ -53,38 +49,7 @@ enum class Material {
     DIELECTRIC,
 };
 
-struct Intersection;
-
-struct Primitive {
-    glm::vec3 position{0., 0., 0.};
-    glm::quat rotation{1., 0., 0., 0.};
-    glm::quat conjRotation{1., 0., 0., 0.};
-    glm::vec3 color{0., 0., 0.};
-    glm::vec3 emission{0., 0., 0.};
-    Material material = Material::DIFFUSER;
-    float ior = 1.;
-
-    virtual Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) = 0;
-};
-
-struct Plane : Primitive {
-    glm::vec3 normal{0., 0., 1.};
-
-    Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) override;
-};
-
-struct Ellipsoid : Primitive {
-    glm::vec3 radius{1., 1., 1.};
-    glm::vec3 radiusSq{1., 1., 1.};
-
-    Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) override;
-};
-
-struct Box : Primitive {
-    glm::vec3 size{1., 1., 1.};
-
-    Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) override;
-};
+struct Primitive;
 
 struct Intersection {
     bool isIntersected = false;
@@ -96,7 +61,263 @@ struct Intersection {
     float nl = 0.;
 
     glm::vec3 normal{0., 0., 0.};
-    Primitive *primitive = nullptr;
+    const Primitive *primitive = nullptr;
+
+    void update(const glm::vec3 &o, const glm::vec3 &newD, const Primitive *newPrimitive) {
+        if (!isIntersected) {
+            return;
+        }
+        d = newD;
+        nl = -glm::dot(normal, d);
+        p = o + t * d;
+        primitive = newPrimitive;
+    }
+};
+
+float sampleUniform(float a = 0., float b = 1.) {
+    uniform_real_distribution<float> dis{a, b};
+    return dis(RNG);
+}
+
+float sampleNormal(float m = 0., float s = 1.) {
+    normal_distribution<float> dis{m, s};
+    return dis(RNG);
+}
+
+struct Primitive {
+    glm::vec3 position{0., 0., 0.};
+    glm::quat rotation{1., 0., 0., 0.};
+    glm::quat conjRotation{1., 0., 0., 0.};
+    glm::vec3 color{0., 0., 0.};
+    glm::vec3 emission{0., 0., 0.};
+    Material material = Material::DIFFUSER;
+    float ior = 1.;
+    bool isPlane = false;
+
+    virtual Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) = 0;
+
+    virtual glm::vec3 samplePoint() = 0;
+    virtual float pdf(glm::vec3 o, glm::vec3 d) = 0;
+
+    pair<Intersection, Intersection> intersectFull(const glm::vec3 &o, const glm::vec3 &d) {
+        Intersection i1 = intersectPrimitive(o, d);
+        if (!i1.isIntersected) {
+            return {i1, i1};
+        }
+        Intersection i2;
+        if (i1.isInside) {
+            i2 = intersectPrimitive(i1.p + i1.normal * EPS, glm::normalize(o - i1.p));
+        } else {
+            i2 = intersectPrimitive(i1.p - i1.normal * EPS, d);
+        }
+        i2.p = o + i2.t * d;
+        return {i1, i2};
+    }
+
+    float pdfFull(const glm::vec3 &o, const Intersection &i1, const Intersection &i2,
+                  const float &p1, const float &p2) {
+        glm::vec3 r1 = i1.p - o;
+        glm::vec3 r2 = i2.p - o;
+        float fp1 = p1 * glm::dot(r1, r1) / glm::abs(glm::dot(glm::normalize(r1), i1.normal));
+        float fp2 = p2 * glm::dot(r2, r2) / glm::abs(glm::dot(glm::normalize(r2), i2.normal));
+        return fp1 + fp2;
+    }
+};
+
+struct Plane : Primitive {
+    glm::vec3 normal{0., 0., 1.};
+
+    Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) override {
+        glm::vec3 no = conjRotation * (o - position);
+        glm::vec3 nd = conjRotation * d;
+
+        Intersection intersection;
+        intersection.normal = rotation * normal;
+        intersection.t = -glm::dot(no, normal) / glm::dot(nd, normal);
+        intersection.isIntersected = intersection.t > 0;
+        intersection.update(o, d, this);
+        return intersection;
+    }
+
+    glm::vec3 samplePoint() override {
+        throw bad_function_call();
+    }
+
+    float pdf(glm::vec3 o, glm::vec3 d) override {
+        throw bad_function_call();
+    }
+};
+
+struct Ellipsoid : Primitive {
+    glm::vec3 radius{1., 1., 1.};
+    glm::vec3 radiusSq{1., 1., 1.};
+
+    Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) override {
+        glm::vec3 no = conjRotation * (o - position);
+        glm::vec3 nd = conjRotation * d;
+
+        glm::vec3 ndr = nd / radius;
+        glm::vec3 nor = no / radius;
+
+        float a = glm::dot(ndr, ndr);
+        float b = glm::dot(nor, ndr) / a;
+        float c = (glm::dot(nor, nor) - 1) / a;
+
+        Intersection intersection;
+
+        float discr = b * b - c;
+        if (discr < 0) {
+            return intersection;
+        }
+        float sqrtDiscr = glm::sqrt(discr);
+
+        float mind = -b - sqrtDiscr;
+        float maxd = -b + sqrtDiscr;
+
+        if (mind < 0 && maxd > 0) {
+            intersection.t = maxd;
+            intersection.normal = -glm::normalize(rotation * ((no + maxd * nd) / radiusSq));
+            intersection.isInside = true;
+            intersection.isIntersected = true;
+        } else if (mind > 0) {
+            intersection.t = mind;
+            intersection.normal = glm::normalize(rotation * ((no + mind * nd) / radiusSq));
+            intersection.isIntersected = true;
+        }
+
+        intersection.update(o, d, this);
+
+        return intersection;
+    }
+
+    glm::vec3 samplePoint() override {
+        float x = sampleNormal();
+        float y = sampleNormal();
+        float z = sampleNormal();
+        glm::vec3 point{x, y, z};
+        point = glm::normalize(point);
+        point.x *= radius.x;
+        point.y *= radius.y;
+        point.z *= radius.z;
+        return rotation * point + position;
+    }
+
+    float pdf(glm::vec3 o, glm::vec3 d) override {
+        pair<Intersection, Intersection> is = intersectFull(o, d);
+        Intersection &i1 = is.first;
+        Intersection &i2 = is.second;
+
+        if (!i1.isIntersected) {
+            return 0.f;
+        }
+
+        float rs = radius.x * radius.y * radius.z;
+        rs = rs * rs;
+        float rxs = radius.x * radius.x;
+        float rys = radius.y * radius.y;
+        float rzs = radius.z * radius.z;
+        
+        glm::vec3 pos1 = conjRotation * (i1.p - position);
+        glm::vec3 pos2 = conjRotation * (i1.p - position);
+
+        float p1 = glm::one_over_pi<float>() / 4.f / glm::sqrt(
+                pos1.x * pos1.x * rs / rxs + pos1.y * pos1.y * rs / rys + pos1.z * pos1.z * rs / rzs);
+        float p2 = glm::one_over_pi<float>() / 4.f / glm::sqrt(
+                pos2.x * pos2.x * rs / rxs + pos2.y * pos2.y * rs / rys + pos2.z * pos2.z * rs / rzs);
+
+        return pdfFull(o, i1, i2, p1, p2);
+    }
+};
+
+struct Box : Primitive {
+    glm::vec3 size{1., 1., 1.};
+
+    Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) override {
+        glm::vec3 no = conjRotation * (o - position);
+        glm::vec3 nd = conjRotation * d;
+
+        glm::vec3 t1 = (size - no) / nd;
+        glm::vec3 t2 = (-size - no) / nd;
+
+        float d1 = max(max(min(t1.x, t2.x), min(t1.y, t2.y)), min(t1.z, t2.z));
+        float d2 = min(min(max(t1.x, t2.x), max(t1.y, t2.y)), max(t1.z, t2.z));
+
+        Intersection intersection;
+
+        if (d1 > d2 || d2 < 0) {
+            return intersection;
+        }
+
+        intersection.isIntersected = true;
+        if (d1 < 0) {
+            intersection.t = d2;
+            intersection.isInside = true;
+        } else {
+            intersection.t = d1;
+        }
+
+        glm::vec3 ps = (no + intersection.t * nd) / size;
+        glm::vec3 aps {fabs(ps.x), fabs(ps.y), fabs(ps.z)};
+        if (aps.x > aps.y && aps.x > aps.z) {
+            if (ps.x < 0) {
+                intersection.normal = {-1., 0., 0.};
+            } else {
+                intersection.normal = {1., 0., 0.};
+            }
+        } else if (aps.y > aps.x && aps.y > aps.z) {
+            if (ps.y < 0) {
+                intersection.normal = {0., -1., 0.};
+            } else {
+                intersection.normal = {0., 1., 0.};
+            }
+        } else {
+            if (ps.z < 0) {
+                intersection.normal = {0., 0., -1.};
+            } else {
+                intersection.normal = {0., 0., 1.};
+            }
+        }
+        intersection.normal = rotation * intersection.normal;
+        if (intersection.isInside) {
+            intersection.normal = -intersection.normal;
+        }
+
+        intersection.update(o, d, this);
+
+        return intersection;
+    }
+
+    glm::vec3 samplePoint() override {
+        float wx = size.y * size.z;
+        float wy = size.x * size.z;
+        float wz = size.x * size.y;
+        float u = sampleUniform(0.f, wx + wy + wz);
+        float side = 2 * (float(sampleUniform() < 0.5f) - 0.5f);
+        float c1 = sampleUniform(0.f, 2.f) - 1.f, c2 = sampleUniform(0.f, 2.f) - 1.f;
+        glm::vec3 point;
+        if (u < wx) {
+            point = {side * size.x, c1 * size.y, c2 * size.z};
+        } else if (u < wx + wy) {
+            point = {c1 * size.x, side * size.y, c2 * size.z};
+        } else {
+            point = {c1 * size.x, c2 * size.y, side * size.z};
+        }
+        return rotation * point + position;
+    }
+
+    float pdf(glm::vec3 o, glm::vec3 d) override {
+        pair<Intersection, Intersection> is = intersectFull(o, d);
+        Intersection &i1 = is.first;
+        Intersection &i2 = is.second;
+
+        if (!i1.isIntersected) {
+            return 0.f;
+        }
+
+        float p = 1.f / 8.f / (size.y * size.z + size.x * size.z + size.x * size.y);
+
+        return pdfFull(o, i1, i2, p, p);
+    }
 };
 
 struct InputData {
@@ -113,6 +334,100 @@ struct InputData {
     glm::vec2 cameraFovTan{0., 0.};
 
     vector<shared_ptr<Primitive>> primitives;
+    vector<Primitive *> lights;
+};
+
+struct Distribution {
+    glm::vec3 x{0., 0., 0.};
+    glm::vec3 n{0., 0., 0.};
+
+    Distribution(glm::vec3 x, glm::vec3 n) : x(x), n(n) {}
+
+    virtual glm::vec3 sample() = 0;
+    virtual float pdf(glm::vec3 d) = 0;
+
+    virtual ~Distribution() = default;
+};
+
+struct Uniform : Distribution {
+    using Distribution::Distribution;
+
+    glm::vec3 sample() override {
+        float x = sampleNormal();
+        float y = sampleNormal();
+        float z = sampleNormal();
+        glm::vec3 d{x, y, z};
+        return glm::normalize(d);
+    }
+
+    float pdf(glm::vec3) override {
+        return glm::four_over_pi<float>();
+    }
+};
+
+struct Cosine : Distribution {
+    using Distribution::Distribution;
+
+    glm::vec3 sample() override {
+        float x = sampleNormal();
+        float y = sampleNormal();
+        float z = sampleNormal();
+        glm::vec3 d{x, y, z};
+        d = glm::normalize(d) + n * (1 + EPS);
+        return glm::normalize(d);
+    }
+
+    float pdf(glm::vec3 d) override {
+        float dn = glm::dot(d, n);
+        if (dn < 0.f) {
+            return 0.f;
+        }
+        return dn * glm::one_over_pi<float>();
+    }
+};
+
+struct LightSurface : Distribution {
+    const vector<Primitive *> *lights;
+
+    LightSurface(glm::vec3 x, glm::vec3 n, const vector<Primitive *> *lights)
+            : Distribution(x, n), lights(lights) {}
+
+    glm::vec3 sample() override {
+        int i = int(sampleUniform(0.f, float(lights->size())) - EPS);
+        return (*lights)[i]->samplePoint() - x;
+    }
+
+    float pdf(glm::vec3 d) override {
+        float ps = 0.f;
+        for (auto &light: *lights) {
+            ps += light->pdf(x, d);
+        }
+        if (ps < 0.f || isnan(ps) || isinf(ps)) {
+            return 0.f;
+        }
+        return ps / float(lights->size());
+    }
+};
+
+struct Mix : Distribution {
+    Cosine cosine;
+    LightSurface lightSurface;
+
+    Mix(glm::vec3 x, glm::vec3 n, const vector<Primitive *> *lights) :
+            Distribution(x, n), cosine(x, n), lightSurface(x, n, lights) {}
+
+    glm::vec3 sample() override {
+        bool c = sampleUniform() < 0.5f;
+        if (c) {
+            return cosine.sample();
+        } else {
+            return lightSurface.sample();
+        }
+    }
+
+    float pdf(glm::vec3 d) override {
+        return 0.5f * cosine.pdf(d) + 0.5f * lightSurface.pdf(d);
+    }
 };
 
 glm::vec3 saturate(const glm::vec3 &color) {
@@ -128,15 +443,6 @@ glm::vec3 aces_tonemap(glm::vec3 const & x) {
     return saturate((x*(a*x+b))/(x*(c*x+d)+e));
 }
 
-float sampleUniform(float a = 0., float b = 1.) {
-    uniform_real_distribution<float> dis{a, b};
-    return dis(RNG);
-}
-
-float sampleNormal(float m = 0., float s = 1.) {
-    normal_distribution<float> dis{m, s};
-    return dis(RNG);
-}
 
 ColorInt colorFloatToInt(glm::vec3 &color) {
     return ColorInt {
@@ -197,11 +503,15 @@ InputData parseInput(string &inputPath) {
             inputData.cameraFovTan.x = glm::tan(fovX / 2);
         } else if (command == "NEW_PRIMITIVE" && lastPrimitive != nullptr) {
             inputData.primitives.push_back(lastPrimitive);
+            if (glm::length(lastPrimitive->emission) > EPS && !lastPrimitive->isPlane) {
+                inputData.lights.push_back(lastPrimitive.get());
+            }
             lastPrimitive = nullptr;
         } else if (command == "PLANE") {
             std::shared_ptr<Plane> newPlane(new Plane());
             inputFile >> newPlane->normal.x >> newPlane->normal.y >> newPlane->normal.z;
             newPlane->normal = glm::normalize(newPlane->normal);
+            newPlane->isPlane = true;
             lastPrimitive = newPlane;
         } else if (command == "ELLIPSOID") {
             std::shared_ptr<Ellipsoid> newEllipsoid(new Ellipsoid());
@@ -239,106 +549,6 @@ InputData parseInput(string &inputPath) {
     return inputData;
 }
 
-Intersection Plane::intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) {
-    glm::vec3 no = this->conjRotation * (o - this->position);
-    glm::vec3 nd = this->conjRotation * d;
-
-    Intersection intersection;
-    intersection.normal = this->rotation * this->normal;
-    intersection.t = -glm::dot(no, this->normal) / glm::dot(nd, this->normal);
-    intersection.isIntersected = intersection.t > 0;
-    return intersection;
-}
-
-Intersection Ellipsoid::intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) {
-    glm::vec3 no = this->conjRotation * (o - this->position);
-    glm::vec3 nd = this->conjRotation * d;
-
-    glm::vec3 ndr = nd / this->radius;
-    glm::vec3 nor = no / this->radius;
-
-    float a = glm::dot(ndr, ndr);
-    float b = glm::dot(nor, ndr) / a;
-    float c = (glm::dot(nor, nor) - 1) / a;
-
-    Intersection intersection;
-
-    float discr = b * b - c;
-    if (discr < 0) {
-        return intersection;
-    }
-    float sqrtDiscr = glm::sqrt(discr);
-
-    float mind = -b - sqrtDiscr;
-    float maxd = -b + sqrtDiscr;
-
-    if (mind < 0 && maxd > 0) {
-        intersection.t = maxd;
-        intersection.normal = -glm::normalize(this->rotation * ((no + maxd * nd) / this->radiusSq));
-        intersection.isInside = true;
-        intersection.isIntersected = true;
-    } else if (mind > 0) {
-        intersection.t = mind;
-        intersection.normal = glm::normalize(this->rotation * ((no + mind * nd) / this->radiusSq));
-        intersection.isIntersected = true;
-    }
-
-    return intersection;
-}
-
-Intersection Box::intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) {
-    glm::vec3 no = this->conjRotation * (o - this->position);
-    glm::vec3 nd = this->conjRotation * d;
-
-    glm::vec3 t1 = (this->size - no) / nd;
-    glm::vec3 t2 = (-this->size - no) / nd;
-
-    float d1 = max(max(min(t1.x, t2.x), min(t1.y, t2.y)), min(t1.z, t2.z));
-    float d2 = min(min(max(t1.x, t2.x), max(t1.y, t2.y)), max(t1.z, t2.z));
-
-    Intersection intersection;
-
-    if (d1 > d2 || d2 < 0) {
-        return intersection;
-    }
-
-    intersection.isIntersected = true;
-    if (d1 < 0) {
-        intersection.t = d2;
-        intersection.isInside = true;
-    } else {
-        intersection.t = d1;
-    }
-
-    glm::vec3 ps = (no + intersection.t * nd) / this->size;
-    glm::vec3 aps {fabs(ps.x), fabs(ps.y), fabs(ps.z)};
-    if (aps.x > aps.y && aps.x > aps.z) {
-        if (ps.x < 0) {
-            intersection.normal = {-1., 0., 0.};
-        } else {
-            intersection.normal = {1., 0., 0.};
-        }
-    } else if (aps.y > aps.x && aps.y > aps.z) {
-        if (ps.y < 0) {
-            intersection.normal = {0., -1., 0.};
-        } else {
-            intersection.normal = {0., 1., 0.};
-        }
-    } else {
-        if (ps.z < 0) {
-            intersection.normal = {0., 0., -1.};
-        } else {
-            intersection.normal = {0., 0., 1.};
-        }
-    }
-    intersection.normal = this->rotation * intersection.normal;
-    if (intersection.isInside) {
-        intersection.normal = -intersection.normal;
-    }
-
-    return intersection;
-}
-
 Intersection intersectScene(const glm::vec3 &o, const glm::vec3 &d, const InputData &inputData) {
     Intersection closestIntersection;
     for (auto &primitive: inputData.primitives) {
@@ -348,11 +558,6 @@ Intersection intersectScene(const glm::vec3 &o, const glm::vec3 &d, const InputD
             closestIntersection = newIntersection;
             closestIntersection.primitive = primitive.get();
         }
-    }
-    if (closestIntersection.isIntersected) {
-        closestIntersection.d = d;
-        closestIntersection.nl = -glm::dot(closestIntersection.normal, d);
-        closestIntersection.p = o + closestIntersection.t * d;
     }
     return closestIntersection;
 }
@@ -368,19 +573,18 @@ glm::vec3 getReflectedLight(const Intersection &intersection, const InputData &i
 }
 
 glm::vec3 applyLightDiffuser(const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth) {
-    float x = sampleNormal();
-    float y = sampleNormal();
-    float z = sampleNormal();
-    glm::vec3 w{x, y, z};
-    w = glm::normalize(w);
+    Distribution *dis;
+    dis = new Cosine{intersection.p, intersection.normal};
+    glm::vec3 w = dis->sample();
+    float p = dis->pdf(w);
+    delete dis;
     float wn = glm::dot(w, intersection.normal);
-    if (wn < 0) {
-        w = -w;
-        wn = -wn;
+    if (wn < 0.f || p <= 0.f) {
+        return intersection.primitive->emission;
     }
     Intersection nextIntersection = intersectScene(intersection.p + EPS * intersection.normal, w, inputData);
     glm::vec3 l = applyLight(nextIntersection, inputData, rayDepth - 1);
-    return 2.f * intersection.primitive->color * l * wn + intersection.primitive->emission;
+    return intersection.primitive->color * l * glm::one_over_pi<float>() * wn / p + intersection.primitive->emission;
 }
 
 glm::vec3 applyLightMetallic(const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth) {
