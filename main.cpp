@@ -325,6 +325,69 @@ struct Box : Primitive {
     }
 };
 
+struct Triangle : Primitive {
+    glm::vec3 pointA{0., 0., 0.};
+    glm::vec3 pointB{0., 0., 0.};
+    glm::vec3 pointC{0., 0., 0.};
+    glm::vec3 normal{0., 0., 1.};
+    glm::vec3 sideAB{0., 0., 0.};
+    glm::vec3 sideAC{0., 0., 0.};
+    float pdfConst = 0.;
+
+    Triangle(float ax, float ay, float az, float bx, float by, float bz, float cx, float cy, float cz)
+            : pointA(ax, ay, az), pointB(bx, by, bz), pointC(cx, cy, cz) {
+        sideAB = pointB - pointA;
+        sideAC = pointC - pointA;
+        glm::vec3 crossProduct = glm::cross(sideAB, sideAC);
+        normal = glm::normalize(crossProduct);
+        pdfConst = 2.f / glm::length(crossProduct);
+    }
+
+    Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) override {
+        glm::vec3 no = conjRotation * (o - position);
+        glm::vec3 nd = conjRotation * d;
+
+        glm::vec3 uvt = glm::inverse(glm::mat3x3{sideAB, sideAC, -nd}) * (no - pointA);
+
+        Intersection intersection;
+
+        if (uvt[0] < 0.f || uvt[1] < 0.f || uvt[0] + uvt[1] > 1.f || uvt[2] < 0.f) {
+            return intersection;
+        }
+
+        intersection.isIntersected = true;
+        intersection.t = uvt[2];
+        intersection.normal = rotation * normal;
+        if (glm::dot(normal, nd) > 0.f) {
+            intersection.isInside = true;
+            intersection.normal = -intersection.normal;
+        }
+
+        intersection.update(o, d, this);
+
+        return intersection;
+    }
+
+    glm::vec3 samplePoint() override {
+        float u = sampleUniform();
+        float v = sampleUniform();
+        if (u + v > 1.f) {
+            u = 1.f - u;
+            v = 1.f - v;
+        }
+        return rotation * (pointA + u * sideAB + v * sideAC) + position;
+    }
+
+    float pdf(glm::vec3 o, glm::vec3 d) override {
+        Intersection i = intersectPrimitive(o, d);
+        if (!i.isIntersected){
+            return 0.f;
+        }
+        glm::vec3 r = i.p - o;
+        return pdfConst * glm::dot(r, r) / glm::abs(glm::dot(glm::normalize(r), i.normal));
+    }
+};
+
 struct InputData {
     uint32_t width = 0;
     uint32_t height = 0;
@@ -533,6 +596,10 @@ InputData parseInput(string &inputPath) {
             std::shared_ptr<Box> newBox(new Box());
             inputFile >> newBox->size.x >> newBox->size.y >> newBox->size.z;
             lastPrimitive = newBox;
+        } else if (command == "TRIANGLE") {
+            float ax, ay, az, bx, by, bz, cx, cy, cz;
+            inputFile >> ax >> ay >> az >> bx >> by >> bz >> cx >> cy >> cz;
+            lastPrimitive = std::make_shared<Triangle>(ax, ay, az, bx, by, bz, cx, cy, cz);
         } else if (command == "POSITION") {
             inputFile >> lastPrimitive->position.x >> lastPrimitive->position.y >> lastPrimitive->position.z;
         } else if (command == "ROTATION") {
