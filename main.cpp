@@ -75,6 +75,11 @@ struct Intersection {
     }
 };
 
+uint32_t sampleUInt(uint32_t a = 0, uint32_t b = 0) {
+    uniform_int_distribution<uint32_t> dis{a, b};
+    return dis(RNG);
+}
+
 float sampleUniform(float a = 0., float b = 1.) {
     uniform_real_distribution<float> dis{a, b};
     return dis(RNG);
@@ -107,11 +112,10 @@ struct Primitive {
         }
         Intersection i2;
         if (i1.isInside) {
-            i2 = intersectPrimitive(i1.p + i1.normal * EPS, glm::normalize(o - i1.p));
+            i2 = intersectPrimitive(i1.p + i1.normal * EPS, -d);
         } else {
             i2 = intersectPrimitive(i1.p - i1.normal * EPS, d);
         }
-        i2.p = o + i2.t * d;
         return {i1, i2};
     }
 
@@ -380,7 +384,7 @@ struct Cosine : Distribution {
 
     float pdf(glm::vec3 d) override {
         float dn = glm::dot(d, n);
-        if (dn < 0.f) {
+        if (dn < EPS) {
             return 0.f;
         }
         return dn * glm::one_over_pi<float>();
@@ -395,8 +399,10 @@ struct LightSurface : Distribution {
             : Distribution(x, n), lights(lights), primitive(primitive) {}
 
     glm::vec3 sample() override {
-        int i = int(sampleUniform(0.f, float(lights->size())) - EPS);
-        return glm::normalize((*lights)[i]->samplePoint() - x);
+        if (lights->empty()) {
+            return {0.f, 0.f, 0.f};
+        }
+        return glm::normalize((*lights)[sampleUInt(0, lights->size() - 1)]->samplePoint() - x);
     }
 
     float pdf(glm::vec3 d) override {
@@ -407,7 +413,7 @@ struct LightSurface : Distribution {
             }
             ps += light->pdf(x, d);
         }
-        if (ps < 0.f || isnan(ps) || isinf(ps)) {
+        if (ps < EPS || isnan(ps) || isinf(ps)) {
             return 0.f;
         }
         return ps / float(lights->size());
@@ -431,7 +437,7 @@ struct Mix : Distribution {
     }
 
     float pdf(glm::vec3 d) override {
-        return 0.5f * cosine.pdf(d) + lightSurface.pdf(d);
+        return 0.5f * cosine.pdf(d) + 0.5f * lightSurface.pdf(d);
     }
 };
 
@@ -548,6 +554,9 @@ InputData parseInput(string &inputPath) {
     inputFile.close();
     if (lastPrimitive != nullptr) {
         inputData.primitives.push_back(lastPrimitive);
+        if (glm::length(lastPrimitive->emission) > EPS && !lastPrimitive->isPlane) {
+            inputData.lights.push_back(lastPrimitive.get());
+        }
     }
     inputData.cameraFovTan.y = inputData.cameraFovTan.x * float(inputData.height) / float(inputData.width);
 
@@ -578,17 +587,11 @@ glm::vec3 getReflectedLight(const Intersection &intersection, const InputData &i
 }
 
 glm::vec3 applyLightDiffuser(const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth) {
-    Distribution *dis;
-    if (inputData.lights.empty()) {
-        dis = new Cosine{intersection.p, intersection.normal};
-    } else {
-        dis = new Mix{intersection.p, intersection.normal, &inputData.lights, intersection.primitive};
-    }
-    glm::vec3 w = dis->sample();
-    float p = dis->pdf(w);
-    delete dis;
+    Mix dis{intersection.p, intersection.normal, &inputData.lights, intersection.primitive};
+    glm::vec3 w = dis.sample();
+    float p = dis.pdf(w);
     float wn = glm::dot(w, intersection.normal);
-    if (wn < 0.f || p <= 0.f) {
+    if (wn < EPS || p < EPS) {
         return intersection.primitive->emission;
     }
     Intersection nextIntersection = intersectScene(intersection.p + EPS * intersection.normal, w, inputData);
