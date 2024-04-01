@@ -1,9 +1,13 @@
+#include <algorithm>
 #include <array>
 #include <ctime>
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <iterator>
+#include <limits>
 #include <memory>
+#include <optional>
 #include <random>
 #include <string>
 #include <vector>
@@ -14,6 +18,8 @@
 using namespace std;
 
 const float EPS = 0.0001f;
+const float INF = numeric_limits<float>::max();
+const float NEG_INF = numeric_limits<float>::min();
 minstd_rand RNG{42};
 
 struct ColorInt {
@@ -90,6 +96,61 @@ float sampleNormal(float m = 0., float s = 1.) {
     return dis(RNG);
 }
 
+struct AABB {
+    glm::vec3 minPoint{INF, INF, INF};
+    glm::vec3 maxPoint{NEG_INF, NEG_INF, NEG_INF};
+
+    void extend(glm::vec3 p)
+    {
+        minPoint = glm::min(minPoint, p);
+        maxPoint = glm::max(maxPoint, p);
+    }
+
+    void extend(AABB aabb)
+    {
+        minPoint = glm::min(minPoint, aabb.minPoint);
+        maxPoint = glm::max(maxPoint, aabb.maxPoint);
+    }
+
+    void rotateAndTranslate(const glm::quat &rotation, const glm::vec3 &translation) {
+        AABB zeroAABB = *this;
+
+        minPoint = {INF, INF, INF};
+        maxPoint = {-INF, -INF, -INF};
+
+        extend(rotation * zeroAABB.maxPoint);
+        extend(rotation * glm::vec3{zeroAABB.maxPoint.x, zeroAABB.maxPoint.y, zeroAABB.minPoint.z});
+        extend(rotation * glm::vec3{zeroAABB.maxPoint.x, zeroAABB.minPoint.y, zeroAABB.maxPoint.z});
+        extend(rotation * glm::vec3{zeroAABB.minPoint.x, zeroAABB.maxPoint.y, zeroAABB.maxPoint.z});
+        extend(rotation * glm::vec3{zeroAABB.maxPoint.x, zeroAABB.minPoint.y, zeroAABB.minPoint.z});
+        extend(rotation * glm::vec3{zeroAABB.minPoint.x, zeroAABB.maxPoint.y, zeroAABB.minPoint.z});
+        extend(rotation * glm::vec3{zeroAABB.minPoint.x, zeroAABB.minPoint.y, zeroAABB.maxPoint.z});
+        extend(rotation * zeroAABB.minPoint);
+
+        minPoint += translation;
+        maxPoint += translation;
+    }
+
+    optional<glm::vec3> intersect(const glm::vec3 &o, const glm::vec3 &d) {
+        glm::vec3 size = maxPoint - minPoint;
+        glm::vec3 t1 = (size - o) / d;
+        glm::vec3 t2 = (-size - o) / d;
+
+        float d1 = max(max(min(t1.x, t2.x), min(t1.y, t2.y)), min(t1.z, t2.z));
+        float d2 = min(min(max(t1.x, t2.x), max(t1.y, t2.y)), max(t1.z, t2.z));
+
+        if (d1 > d2 || d2 < 0) {
+            return nullopt;
+        }
+
+        if (d1 < 0) {
+            return o + d2 * d;
+        } else {
+            return o + d1 * d;
+        }
+    }
+};
+
 struct Primitive {
     glm::vec3 position{0., 0., 0.};
     glm::quat rotation{1., 0., 0., 0.};
@@ -104,6 +165,8 @@ struct Primitive {
 
     virtual glm::vec3 samplePoint() = 0;
     virtual float pdf(glm::vec3 o, glm::vec3 d) = 0;
+
+    virtual AABB getAABB() = 0;
 
     pair<Intersection, Intersection> intersectFull(const glm::vec3 &o, const glm::vec3 &d) {
         Intersection i1 = intersectPrimitive(o, d);
@@ -149,6 +212,10 @@ struct Plane : Primitive {
     }
 
     float pdf(glm::vec3 o, glm::vec3 d) override {
+        throw bad_function_call();
+    }
+
+    AABB getAABB() override {
         throw bad_function_call();
     }
 };
@@ -231,6 +298,14 @@ struct Ellipsoid : Primitive {
                 pos2.x * pos2.x * rs / rxs + pos2.y * pos2.y * rs / rys + pos2.z * pos2.z * rs / rzs);
 
         return pdfFull(o, i1, i2, p1, p2);
+    }
+
+    AABB getAABB() override {
+        AABB aabb{};
+        aabb.extend(radius);
+        aabb.extend(-radius);
+        aabb.rotateAndTranslate(rotation, position);
+        return aabb;
     }
 };
 
@@ -323,6 +398,14 @@ struct Box : Primitive {
 
         return pdfFull(o, i1, i2, p, p);
     }
+
+    AABB getAABB() override {
+        AABB aabb{};
+        aabb.extend(size / 2.f);
+        aabb.extend(-size / 2.f);
+        aabb.rotateAndTranslate(rotation, position);
+        return aabb;
+    }
 };
 
 struct Triangle : Primitive {
@@ -386,6 +469,115 @@ struct Triangle : Primitive {
         glm::vec3 r = i.p - o;
         return pdfConst * glm::dot(r, r) / glm::abs(glm::dot(glm::normalize(r), i.normal));
     }
+
+    AABB getAABB() override {
+        AABB aabb{};
+        aabb.extend(pointA);
+        aabb.extend(pointB);
+        aabb.extend(pointC);
+        aabb.rotateAndTranslate(rotation, position);
+        return aabb;
+    }
+};
+
+struct BVHNode {
+    AABB aabb;
+    uint32_t left = 0;
+    uint32_t right = 0;
+    uint32_t firstPrimitiveId = 0;
+    uint32_t primitiveCount = 0;
+};
+
+struct BVH {
+    vector<BVHNode> nodes;
+    uint32_t root = 0;
+
+    void build(vector<shared_ptr<Primitive>> &primitives) {
+        auto begin = partition(primitives.begin(), primitives.end(),
+                               [](shared_ptr<Primitive> &primitive) { return primitive->isPlane; });
+        buildRecursive(primitives, begin, primitives.end());
+        nodes[root].firstPrimitiveId = 0;
+        nodes[root].primitiveCount += distance(primitives.begin(), begin);
+    }
+
+    Intersection intersect(const vector<shared_ptr<Primitive>> &primitives,
+                           const glm::vec3 &o, const glm::vec3 &d, uint32_t curNode = 0) const {
+        const BVHNode &node = nodes[curNode];
+        Intersection closestIntersection;
+        for (uint32_t i = node.firstPrimitiveId; i < node.firstPrimitiveId + node.primitiveCount; ++i) {
+            Intersection newIntersection = primitives[i]->intersectPrimitive(o, d);
+            if (newIntersection.isIntersected &&
+                (!closestIntersection.isIntersected || newIntersection.t < closestIntersection.t)) {
+                closestIntersection = newIntersection;
+                closestIntersection.primitive = primitives[i].get();
+            }
+        }
+
+        if (nodes[curNode].left != root) {
+            Intersection newIntersection = intersect(primitives, o, d, nodes[curNode].left);
+            if (newIntersection.isIntersected &&
+                (!closestIntersection.isIntersected || newIntersection.t < closestIntersection.t)) {
+                closestIntersection = newIntersection;
+            }
+        }
+
+        if (nodes[curNode].right != root) {
+            Intersection newIntersection = intersect(primitives, o, d, nodes[curNode].right);
+            if (newIntersection.isIntersected &&
+                (!closestIntersection.isIntersected || newIntersection.t < closestIntersection.t)) {
+                closestIntersection = newIntersection;
+            }
+        }
+
+        return closestIntersection;
+    }
+
+private:
+    void buildRecursive(vector<shared_ptr<Primitive>> &primitives,
+                        auto begin, auto end) {
+        uint32_t curNode = nodes.size();
+        nodes.push_back(BVHNode{});
+
+        uint32_t totalCount = distance(begin, end);
+        if (totalCount <= 4) {
+            nodes[curNode].firstPrimitiveId = distance(primitives.begin(), begin);
+            nodes[curNode].primitiveCount = totalCount;
+            return;
+        }
+
+        AABB totalAABB{};
+        for (auto i = begin; i != end; ++i) {
+            totalAABB.extend((*i)->getAABB());
+        }
+
+        glm::vec3 size = totalAABB.maxPoint - totalAABB.minPoint;
+        auto &middle = end;
+        if (size.x > size.y && size.x > size.z) {
+            middle = partition(begin, end, [size](shared_ptr<Primitive> &primitive) {
+                return primitive->position.x < size.x / 2.f;
+            });
+        } else if (size.y > size.z) {
+            middle = partition(begin, end, [size](shared_ptr<Primitive> &primitive) {
+                return primitive->position.y < size.y / 2.f;
+            });
+        } else {
+            middle = partition(begin, end, [size](shared_ptr<Primitive> &primitive) {
+                return primitive->position.z < size.z / 2.f;
+            });
+        }
+
+        if (middle == end) {
+            nodes[curNode].firstPrimitiveId = distance(primitives.begin(), begin);
+            nodes[curNode].primitiveCount = totalCount;
+            return;
+        }
+
+        nodes[curNode].left = curNode + 1;
+        buildRecursive(primitives, begin, middle);
+
+        nodes[curNode].right = nodes.size();
+        buildRecursive(primitives, middle, end);
+    }
 };
 
 struct InputData {
@@ -403,6 +595,8 @@ struct InputData {
 
     vector<shared_ptr<Primitive>> primitives;
     vector<Primitive *> lights;
+
+    BVH bvh;
 };
 
 struct Distribution {
@@ -626,21 +820,13 @@ InputData parseInput(string &inputPath) {
         }
     }
     inputData.cameraFovTan.y = inputData.cameraFovTan.x * float(inputData.height) / float(inputData.width);
-
+    inputData.bvh = BVH{};
+    inputData.bvh.build(inputData.primitives);
     return inputData;
 }
 
 Intersection intersectScene(const glm::vec3 &o, const glm::vec3 &d, const InputData &inputData) {
-    Intersection closestIntersection;
-    for (auto &primitive: inputData.primitives) {
-        Intersection newIntersection = primitive->intersectPrimitive(o, d);
-        if (newIntersection.isIntersected &&
-                (!closestIntersection.isIntersected || newIntersection.t < closestIntersection.t)) {
-            closestIntersection = newIntersection;
-            closestIntersection.primitive = primitive.get();
-        }
-    }
-    return closestIntersection;
+    return inputData.bvh.intersect(inputData.primitives, o, d);
 }
 
 glm::vec3 applyLight(const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth);
@@ -745,7 +931,9 @@ glm::vec3 generatePixel(uint32_t px, uint32_t py, const InputData &inputData) {
     color /= inputData.samples;
     color = aces_tonemap(color);
     float p = 1.f / 2.2f;
-    color = {glm::pow(color.x, p), glm::pow(color.y, p), glm::pow(color.z, p)};
+    color = {glm::pow(color.x, p),
+             glm::pow(color.y, p),
+             glm::pow(color.z, p)};
     return color;
 }
 
