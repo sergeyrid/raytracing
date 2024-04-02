@@ -972,6 +972,8 @@ glm::vec3 applyLight(const Intersection &intersection, const InputData &inputDat
     glm::vec3 color{0., 0., 0.};
     if (rayDepth == 0) {
         return color;
+    } else if (rayDepth == 1) {
+        return intersection.primitive->emission;
     }
 
     if (intersection.primitive->material == Material::DIFFUSER) {
