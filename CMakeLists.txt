@@ -17,8 +17,6 @@ FetchContent_MakeAvailable(glm)
 
 target_link_libraries(raytracing PRIVATE glm::glm)
 
-set(CMAKE_CXX_COMPILER "/Users/sergeyrid/homebrew/opt/llvm/bin/clang++")
-
 if(APPLE)
     find_package(OpenMP)
     if(NOT OpenMP_FOUND)
