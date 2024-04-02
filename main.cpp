@@ -1,6 +1,4 @@
 #include <algorithm>
-#include <array>
-#include <ctime>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -14,6 +12,8 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+
+#include <omp.h>
 
 using namespace std;
 
@@ -46,7 +46,7 @@ struct SceneFloat {
 
     SceneFloat(const uint32_t &width, const uint32_t &height) : width(width), height(height) {
         data = vector<glm::vec3>();
-        data.reserve(width * height);
+        data.resize(width * height);
     }
 };
 
@@ -99,6 +99,19 @@ float sampleNormal(float m = 0., float s = 1.) {
 struct AABB {
     glm::vec3 minPoint{INF, INF, INF};
     glm::vec3 maxPoint{NEG_INF, NEG_INF, NEG_INF};
+    glm::vec3 center{0., 0., 0.};
+
+    float area() {
+        if (minPoint.x > maxPoint.x || minPoint.y > maxPoint.y || minPoint.z > maxPoint.z) {
+            return 0.f;
+        }
+
+        float a = maxPoint.x - minPoint.x;
+        float b = maxPoint.y - minPoint.y;
+        float c = maxPoint.z - minPoint.z;
+
+        return a * b + a * c + b * c;
+    }
 
     void extend(glm::vec3 p)
     {
@@ -131,7 +144,15 @@ struct AABB {
         maxPoint += translation;
     }
 
-    optional<glm::vec3> intersect(const glm::vec3 &o, const glm::vec3 &d) {
+    void calculateCenter() {
+        center = glm::vec3 {
+                (maxPoint.x + minPoint.x) / 2.f,
+                (maxPoint.y + minPoint.y) / 2.f,
+                (maxPoint.z + minPoint.z) / 2.f,
+        };
+    }
+
+    optional<glm::vec3> intersect(const glm::vec3 &o, const glm::vec3 &d) const {
         glm::vec3 size = maxPoint - minPoint;
         glm::vec3 t1 = (size - o) / d;
         glm::vec3 t2 = (-size - o) / d;
@@ -160,13 +181,14 @@ struct Primitive {
     Material material = Material::DIFFUSER;
     float ior = 1.;
     bool isPlane = false;
+    AABB aabb;
 
     virtual Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) = 0;
 
     virtual glm::vec3 samplePoint() = 0;
     virtual float pdf(glm::vec3 o, glm::vec3 d) = 0;
 
-    virtual AABB getAABB() = 0;
+    virtual void calculateAABB() = 0;
 
     pair<Intersection, Intersection> intersectFull(const glm::vec3 &o, const glm::vec3 &d) {
         Intersection i1 = intersectPrimitive(o, d);
@@ -215,7 +237,7 @@ struct Plane : Primitive {
         throw bad_function_call();
     }
 
-    AABB getAABB() override {
+    void calculateAABB() override {
         throw bad_function_call();
     }
 };
@@ -300,12 +322,12 @@ struct Ellipsoid : Primitive {
         return pdfFull(o, i1, i2, p1, p2);
     }
 
-    AABB getAABB() override {
-        AABB aabb{};
+    void calculateAABB() override {
+        aabb = AABB{};
         aabb.extend(radius);
         aabb.extend(-radius);
         aabb.rotateAndTranslate(rotation, position);
-        return aabb;
+        aabb.calculateCenter();
     }
 };
 
@@ -399,12 +421,12 @@ struct Box : Primitive {
         return pdfFull(o, i1, i2, p, p);
     }
 
-    AABB getAABB() override {
-        AABB aabb{};
+    void calculateAABB() override {
+        aabb = AABB{};
         aabb.extend(size / 2.f);
         aabb.extend(-size / 2.f);
         aabb.rotateAndTranslate(rotation, position);
-        return aabb;
+        aabb.calculateCenter();
     }
 };
 
@@ -470,13 +492,13 @@ struct Triangle : Primitive {
         return pdfConst * glm::dot(r, r) / glm::abs(glm::dot(glm::normalize(r), i.normal));
     }
 
-    AABB getAABB() override {
-        AABB aabb{};
+    void calculateAABB() override {
+        aabb = AABB{};
         aabb.extend(pointA);
         aabb.extend(pointB);
         aabb.extend(pointC);
         aabb.rotateAndTranslate(rotation, position);
-        return aabb;
+        aabb.calculateCenter();
     }
 };
 
@@ -486,6 +508,7 @@ struct BVHNode {
     uint32_t right = 0;
     uint32_t firstPrimitiveId = 0;
     uint32_t primitiveCount = 0;
+    uint8_t division = 0; // 0 - x, 1 - y, 2 - z
 };
 
 struct BVH {
@@ -513,16 +536,28 @@ struct BVH {
             }
         }
 
-        if (nodes[curNode].left != root) {
-            Intersection newIntersection = intersect(primitives, o, d, nodes[curNode].left);
+        uint32_t left = nodes[curNode].left;
+        uint32_t right = nodes[curNode].right;
+
+        if (nodes[curNode].division == 0 && d.x < 0 ||
+                nodes[curNode].division == 1 && d.y < 0 ||
+                nodes[curNode].division == 2 && d.z < 0) {
+            left = nodes[curNode].right;
+            right = nodes[curNode].left;
+        }
+
+        bool intersectLeft = false;
+        if (left != root) {
+            Intersection newIntersection = intersect(primitives, o, d, left);
             if (newIntersection.isIntersected &&
                 (!closestIntersection.isIntersected || newIntersection.t < closestIntersection.t)) {
                 closestIntersection = newIntersection;
             }
+            intersectLeft = newIntersection.isIntersected;
         }
 
-        if (nodes[curNode].right != root) {
-            Intersection newIntersection = intersect(primitives, o, d, nodes[curNode].right);
+        if (right != root && !intersectLeft) {
+            Intersection newIntersection = intersect(primitives, o, d, right);
             if (newIntersection.isIntersected &&
                 (!closestIntersection.isIntersected || newIntersection.t < closestIntersection.t)) {
                 closestIntersection = newIntersection;
@@ -538,36 +573,60 @@ private:
         uint32_t curNode = nodes.size();
         nodes.push_back(BVHNode{});
 
+        for (auto i = begin; i != end; ++i) {
+            nodes[curNode].aabb.extend((*i)->aabb);
+        }
         uint32_t totalCount = distance(begin, end);
+
         if (totalCount <= 4) {
             nodes[curNode].firstPrimitiveId = distance(primitives.begin(), begin);
             nodes[curNode].primitiveCount = totalCount;
             return;
         }
 
-        AABB totalAABB{};
-        for (auto i = begin; i != end; ++i) {
-            totalAABB.extend((*i)->getAABB());
-        }
+        float bestCost = (float)totalCount * nodes[curNode].aabb.area();
+        auto middle = end;
 
-        glm::vec3 size = totalAABB.maxPoint - totalAABB.minPoint;
-        auto &middle = end;
-        if (size.x > size.y && size.x > size.z) {
-            middle = partition(begin, end, [size](shared_ptr<Primitive> &primitive) {
-                return primitive->position.x < size.x / 2.f;
+        for (uint8_t division = 0; division < 3; ++division) {
+            sort(begin, end, [division](shared_ptr<Primitive> &p1, shared_ptr<Primitive> &p2) {
+                if (division == 0) {
+                    return p1->aabb.center.x < p2->aabb.center.x;
+                } else if (division == 1) {
+                    return p1->aabb.center.y < p2->aabb.center.y;
+                } else {
+                    return p1->aabb.center.z < p2->aabb.center.z;
+                }
             });
-        } else if (size.y > size.z) {
-            middle = partition(begin, end, [size](shared_ptr<Primitive> &primitive) {
-                return primitive->position.y < size.y / 2.f;
-            });
-        } else {
-            middle = partition(begin, end, [size](shared_ptr<Primitive> &primitive) {
-                return primitive->position.z < size.z / 2.f;
-            });
+
+            AABB totalAABB;
+            vector<AABB> leftAABBs(primitives.size() + 1);
+            vector<AABB> rightAABBs(primitives.size() + 1);
+            uint32_t j = 0;
+            for (auto i = begin; i != end; ++i) {
+                ++j;
+                totalAABB.extend((*i)->aabb);
+                leftAABBs[j] = totalAABB;
+            }
+            totalAABB = AABB{};
+            for (auto i = end - 1; i != begin; --i) {
+                --j;
+                totalAABB.extend((*i)->aabb);
+                rightAABBs[j] = totalAABB;
+            }
+            rightAABBs[0] = leftAABBs.back();
+
+            for (uint32_t i = 1; i < totalCount; ++i) {
+                float newCost = leftAABBs[i].area() * (float)i + rightAABBs[i].area() * (float)(totalCount - i);
+                if (newCost < bestCost) {
+                    bestCost = newCost;
+                    middle = begin + i;
+                    nodes[curNode].division = division;
+                }
+            }
         }
 
         if (middle == end) {
-            nodes[curNode].firstPrimitiveId = distance(primitives.begin(), begin);
+            nodes[curNode].firstPrimitiveId = distance(primitives.begin(), end);
             nodes[curNode].primitiveCount = totalCount;
             return;
         }
@@ -739,6 +798,7 @@ void printImage(SceneFloat &scene, string &outputPath) {
 }
 
 InputData parseInput(string &inputPath) {
+    double start = omp_get_wtime();;
     ifstream inputFile(inputPath);
 
     InputData inputData;
@@ -773,6 +833,9 @@ InputData parseInput(string &inputPath) {
             inputData.primitives.push_back(lastPrimitive);
             if (glm::length(lastPrimitive->emission) > EPS && !lastPrimitive->isPlane) {
                 inputData.lights.push_back(lastPrimitive.get());
+            }
+            if (!lastPrimitive->isPlane) {
+                lastPrimitive->calculateAABB();
             }
             lastPrimitive = nullptr;
         } else if (command == "PLANE") {
@@ -818,10 +881,16 @@ InputData parseInput(string &inputPath) {
         if (glm::length(lastPrimitive->emission) > EPS && !lastPrimitive->isPlane) {
             inputData.lights.push_back(lastPrimitive.get());
         }
+        if (!lastPrimitive->isPlane) {
+            lastPrimitive->calculateAABB();
+        }
     }
     inputData.cameraFovTan.y = inputData.cameraFovTan.x * float(inputData.height) / float(inputData.width);
     inputData.bvh = BVH{};
     inputData.bvh.build(inputData.primitives);
+
+    cout << "Processed input after " << omp_get_wtime() - start << "s" << endl;
+
     return inputData;
 }
 
@@ -939,16 +1008,15 @@ glm::vec3 generatePixel(uint32_t px, uint32_t py, const InputData &inputData) {
 
 SceneFloat generateScene(const InputData &inputData) {
     SceneFloat scene(inputData.width, inputData.height);
-    for (uint32_t i = 0; i < inputData.height; ++i) {
-        for (uint32_t j = 0; j < inputData.width; ++j) {
-            scene.data.push_back(generatePixel(j, i, inputData));
-        }
+    #pragma omp parallel for schedule(dynamic, 8)
+    for (uint32_t ij = 0; ij < inputData.height * inputData.width; ++ij) {
+        scene.data[ij] = generatePixel(ij % inputData.width, ij / inputData.width, inputData);
     }
     return scene;
 }
 
 int main(int, char *argv[]) {
-    clock_t start = clock();
+    double start = omp_get_wtime();;
 
     string inputPath = argv[1];
     string outputPath = argv[2];
@@ -958,6 +1026,6 @@ int main(int, char *argv[]) {
 
     printImage(scene, outputPath);
 
-    cout << "Finished after " << float(clock() - start) / float(CLOCKS_PER_SEC) << "s";
+    cout << "Finished after " << omp_get_wtime() - start << "s";
     return 0;
 }
