@@ -815,7 +815,7 @@ InputData parseInput(string &inputPath) {
             }
         } else if (command == "SAMPLES") {
             inputFile >> inputData.samples;
-            inputData.samples /= 8;
+            inputData.samples /= 4;
         } else if (command == "BG_COLOR") {
             inputFile >> inputData.backgroundColor.x >> inputData.backgroundColor.y >> inputData.backgroundColor.z;
         } else if (command == "CAMERA_POSITION") {
