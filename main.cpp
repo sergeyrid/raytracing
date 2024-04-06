@@ -20,7 +20,7 @@ using namespace std;
 const float EPS = 0.0001f;
 const float INF = numeric_limits<float>::max();
 const float NEG_INF = numeric_limits<float>::min();
-minstd_rand RNG{uint32_t(clock())};
+thread_local minstd_rand RNG{(uint32_t)omp_get_thread_num()};
 
 struct ColorInt {
     uint8_t red;
