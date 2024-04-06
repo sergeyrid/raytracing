@@ -20,7 +20,7 @@ using namespace std;
 const float EPS = 0.0001f;
 const float INF = numeric_limits<float>::max();
 const float NEG_INF = numeric_limits<float>::min();
-minstd_rand RNG{42};
+minstd_rand RNG{uint32_t(clock())};
 
 struct ColorInt {
     uint8_t red;
@@ -549,14 +549,22 @@ struct BVH {
         bool intersectLeft = false;
         if (left != root) {
             Intersection newIntersection = intersect(primitives, o, d, left);
-            if (newIntersection.isIntersected &&
+            intersectLeft = newIntersection.isIntersected;
+            if (intersectLeft &&
                 (!closestIntersection.isIntersected || newIntersection.t < closestIntersection.t)) {
                 closestIntersection = newIntersection;
             }
-            intersectLeft = newIntersection.isIntersected;
         }
 
-        if (right != root && !intersectLeft) {
+        float rightDistance = closestIntersection.t + 1.f;
+        if (intersectLeft) {
+            optional<glm::vec3> rightIntersection = nodes[right].aabb.intersect(o, d);
+            if (rightIntersection) {
+                rightDistance = glm::distance(rightIntersection.value(), o);
+            }
+        }
+
+        if (right != root && (!intersectLeft || rightDistance < closestIntersection.t)) {
             Intersection newIntersection = intersect(primitives, o, d, right);
             if (newIntersection.isIntersected &&
                 (!closestIntersection.isIntersected || newIntersection.t < closestIntersection.t)) {
@@ -815,11 +823,11 @@ InputData parseInput(string &inputPath) {
             }
         } else if (command == "SAMPLES") {
             inputFile >> inputData.samples;
-            inputData.samples /= 4;
+            inputData.samples /= 8;
         } else if (command == "BG_COLOR") {
             inputFile >> inputData.backgroundColor.x >> inputData.backgroundColor.y >> inputData.backgroundColor.z;
         } else if (command == "CAMERA_POSITION") {
-                inputFile >> inputData.cameraPosition.x >> inputData.cameraPosition.y >> inputData.cameraPosition.z;
+            inputFile >> inputData.cameraPosition.x >> inputData.cameraPosition.y >> inputData.cameraPosition.z;
         } else if (command == "CAMERA_RIGHT") {
             inputFile >> inputData.cameraRight.x >> inputData.cameraRight.y >> inputData.cameraRight.z;
         } else if (command == "CAMERA_UP") {
@@ -911,6 +919,7 @@ glm::vec3 getReflectedLight(const Intersection &intersection, const InputData &i
 
 glm::vec3 applyLightDiffuser(const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth) {
     Mix dis{intersection.p, intersection.normal, &inputData.lights, intersection.primitive};
+//    LightSurface dis{intersection.p, intersection.normal, &inputData.lights, intersection.primitive};
     glm::vec3 w = dis.sample();
     float p = dis.pdf(w);
     float wn = glm::dot(w, intersection.normal);
@@ -1014,6 +1023,9 @@ SceneFloat generateScene(const InputData &inputData) {
     #pragma omp parallel for schedule(dynamic, 8)
     for (uint32_t ij = 0; ij < inputData.height * inputData.width; ++ij) {
         scene.data[ij] = generatePixel(ij % inputData.width, ij / inputData.width, inputData);
+        if (ij % 1000 == 0) {
+            cout << ij << endl;
+        }
     }
     return scene;
 }
