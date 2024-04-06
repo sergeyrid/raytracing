@@ -823,7 +823,6 @@ InputData parseInput(string &inputPath) {
             }
         } else if (command == "SAMPLES") {
             inputFile >> inputData.samples;
-            inputData.samples /= 8;
         } else if (command == "BG_COLOR") {
             inputFile >> inputData.backgroundColor.x >> inputData.backgroundColor.y >> inputData.backgroundColor.z;
         } else if (command == "CAMERA_POSITION") {
@@ -919,7 +918,6 @@ glm::vec3 getReflectedLight(const Intersection &intersection, const InputData &i
 
 glm::vec3 applyLightDiffuser(const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth) {
     Mix dis{intersection.p, intersection.normal, &inputData.lights, intersection.primitive};
-//    LightSurface dis{intersection.p, intersection.normal, &inputData.lights, intersection.primitive};
     glm::vec3 w = dis.sample();
     float p = dis.pdf(w);
     float wn = glm::dot(w, intersection.normal);
