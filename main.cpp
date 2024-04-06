@@ -20,7 +20,6 @@ using namespace std;
 const float EPS = 0.0001f;
 const float INF = numeric_limits<float>::max();
 const float NEG_INF = numeric_limits<float>::min();
-thread_local minstd_rand RNG{(uint32_t)omp_get_thread_num()};
 
 struct ColorInt {
     uint8_t red;
@@ -81,17 +80,17 @@ struct Intersection {
     }
 };
 
-uint32_t sampleUInt(uint32_t a = 0, uint32_t b = 0) {
+uint32_t sampleUInt(minstd_rand &RNG, uint32_t a = 0, uint32_t b = 0) {
     uniform_int_distribution<uint32_t> dis{a, b};
     return dis(RNG);
 }
 
-float sampleUniform(float a = 0., float b = 1.) {
+float sampleUniform(minstd_rand &RNG, float a = 0., float b = 1.) {
     uniform_real_distribution<float> dis{a, b};
     return dis(RNG);
 }
 
-float sampleNormal(float m = 0., float s = 1.) {
+float sampleNormal(minstd_rand &RNG, float m = 0., float s = 1.) {
     normal_distribution<float> dis{m, s};
     return dis(RNG);
 }
@@ -185,7 +184,7 @@ struct Primitive {
 
     virtual Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) = 0;
 
-    virtual glm::vec3 samplePoint() = 0;
+    virtual glm::vec3 samplePoint(minstd_rand &RNG) = 0;
     virtual float pdf(glm::vec3 o, glm::vec3 d) = 0;
 
     virtual void calculateAABB() = 0;
@@ -229,7 +228,7 @@ struct Plane : Primitive {
         return intersection;
     }
 
-    glm::vec3 samplePoint() override {
+    glm::vec3 samplePoint(minstd_rand &RNG) override {
         throw bad_function_call();
     }
 
@@ -284,10 +283,10 @@ struct Ellipsoid : Primitive {
         return intersection;
     }
 
-    glm::vec3 samplePoint() override {
-        float x = sampleNormal();
-        float y = sampleNormal();
-        float z = sampleNormal();
+    glm::vec3 samplePoint(minstd_rand &RNG) override {
+        float x = sampleNormal(RNG);
+        float y = sampleNormal(RNG);
+        float z = sampleNormal(RNG);
         glm::vec3 point{x, y, z};
         point = glm::normalize(point);
         point.x *= radius.x;
@@ -389,13 +388,13 @@ struct Box : Primitive {
         return intersection;
     }
 
-    glm::vec3 samplePoint() override {
+    glm::vec3 samplePoint(minstd_rand &RNG) override {
         float wx = size.y * size.z;
         float wy = size.x * size.z;
         float wz = size.x * size.y;
-        float u = sampleUniform(0.f, wx + wy + wz);
-        float side = 2 * (float(sampleUniform() < 0.5f) - 0.5f);
-        float c1 = sampleUniform(0.f, 2.f) - 1.f, c2 = sampleUniform(0.f, 2.f) - 1.f;
+        float u = sampleUniform(RNG, 0.f, wx + wy + wz);
+        float side = 2 * (float(sampleUniform(RNG) < 0.5f) - 0.5f);
+        float c1 = sampleUniform(RNG, 0.f, 2.f) - 1.f, c2 = sampleUniform(RNG, 0.f, 2.f) - 1.f;
         glm::vec3 point;
         if (u < wx) {
             point = {side * size.x, c1 * size.y, c2 * size.z};
@@ -473,9 +472,9 @@ struct Triangle : Primitive {
         return intersection;
     }
 
-    glm::vec3 samplePoint() override {
-        float u = sampleUniform();
-        float v = sampleUniform();
+    glm::vec3 samplePoint(minstd_rand &RNG) override {
+        float u = sampleUniform(RNG);
+        float v = sampleUniform(RNG);
         if (u + v > 1.f) {
             u = 1.f - u;
             v = 1.f - v;
@@ -672,7 +671,7 @@ struct Distribution {
 
     Distribution(glm::vec3 x, glm::vec3 n) : x(x), n(n) {}
 
-    virtual glm::vec3 sample() = 0;
+    virtual glm::vec3 sample(minstd_rand &RNG) = 0;
     virtual float pdf(glm::vec3 d) = 0;
 
     virtual ~Distribution() = default;
@@ -681,10 +680,10 @@ struct Distribution {
 struct Uniform : Distribution {
     using Distribution::Distribution;
 
-    glm::vec3 sample() override {
-        float x = sampleNormal();
-        float y = sampleNormal();
-        float z = sampleNormal();
+    glm::vec3 sample(minstd_rand &RNG) override {
+        float x = sampleNormal(RNG);
+        float y = sampleNormal(RNG);
+        float z = sampleNormal(RNG);
         glm::vec3 d{x, y, z};
         return glm::normalize(d);
     }
@@ -697,10 +696,10 @@ struct Uniform : Distribution {
 struct Cosine : Distribution {
     using Distribution::Distribution;
 
-    glm::vec3 sample() override {
-        float x = sampleNormal();
-        float y = sampleNormal();
-        float z = sampleNormal();
+    glm::vec3 sample(minstd_rand &RNG) override {
+        float x = sampleNormal(RNG);
+        float y = sampleNormal(RNG);
+        float z = sampleNormal(RNG);
         glm::vec3 d{x, y, z};
         d = glm::normalize(d) + n * (1 + EPS);
         return glm::normalize(d);
@@ -722,11 +721,11 @@ struct LightSurface : Distribution {
     LightSurface(glm::vec3 x, glm::vec3 n, const vector<Primitive *> *lights, const Primitive *primitive)
             : Distribution(x, n), lights(lights), primitive(primitive) {}
 
-    glm::vec3 sample() override {
+    glm::vec3 sample(minstd_rand &RNG) override {
         if (lights->empty()) {
             return {0.f, 0.f, 0.f};
         }
-        return glm::normalize((*lights)[sampleUInt(0, lights->size() - 1)]->samplePoint() - x);
+        return glm::normalize((*lights)[sampleUInt(RNG, 0, lights->size() - 1)]->samplePoint(RNG) - x);
     }
 
     float pdf(glm::vec3 d) override {
@@ -751,12 +750,12 @@ struct Mix : Distribution {
     Mix(glm::vec3 x, glm::vec3 n, const vector<Primitive *> *lights, const Primitive *primitive) :
             Distribution(x, n), cosine(x, n), lightSurface(x, n, lights, primitive) {}
 
-    glm::vec3 sample() override {
-        bool c = sampleUniform() < 0.5f;
+    glm::vec3 sample(minstd_rand &RNG) override {
+        bool c = sampleUniform(RNG) < 0.5f;
         if (c) {
-            return cosine.sample();
+            return cosine.sample(RNG);
         } else {
-            return lightSurface.sample();
+            return lightSurface.sample(RNG);
         }
     }
 
@@ -906,35 +905,40 @@ Intersection intersectScene(const glm::vec3 &o, const glm::vec3 &d, const InputD
     return inputData.bvh.intersect(inputData.primitives, o, d);
 }
 
-glm::vec3 applyLight(const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth);
+glm::vec3 applyLight(
+        const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth, minstd_rand &RNG);
 
-glm::vec3 getReflectedLight(const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth) {
+glm::vec3 getReflectedLight(
+        const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth, minstd_rand &RNG) {
     glm::vec3 rd = intersection.d + 2.f * intersection.normal * intersection.nl;
     rd = glm::normalize(rd);
     Intersection reflectionIntersection = intersectScene(
             intersection.p + EPS * intersection.normal, rd, inputData);
-    return applyLight(reflectionIntersection, inputData, rayDepth - 1);
+    return applyLight(reflectionIntersection, inputData, rayDepth - 1, RNG);
 }
 
-glm::vec3 applyLightDiffuser(const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth) {
+glm::vec3 applyLightDiffuser(
+        const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth, minstd_rand &RNG) {
     Mix dis{intersection.p, intersection.normal, &inputData.lights, intersection.primitive};
-    glm::vec3 w = dis.sample();
+    glm::vec3 w = dis.sample(RNG);
     float p = dis.pdf(w);
     float wn = glm::dot(w, intersection.normal);
     if (wn < EPS || p < EPS) {
         return intersection.primitive->emission;
     }
     Intersection nextIntersection = intersectScene(intersection.p + EPS * intersection.normal, w, inputData);
-    glm::vec3 l = applyLight(nextIntersection, inputData, rayDepth - 1);
+    glm::vec3 l = applyLight(nextIntersection, inputData, rayDepth - 1, RNG);
     return intersection.primitive->color * l * glm::one_over_pi<float>() * wn / p + intersection.primitive->emission;
 }
 
-glm::vec3 applyLightMetallic(const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth) {
-    glm::vec3 reflectedColor = getReflectedLight(intersection, inputData, rayDepth);
+glm::vec3 applyLightMetallic(
+        const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth, minstd_rand &RNG) {
+    glm::vec3 reflectedColor = getReflectedLight(intersection, inputData, rayDepth, RNG);
     return intersection.primitive->color * reflectedColor + intersection.primitive->emission;
 }
 
-glm::vec3 applyLightDielectric(const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth) {
+glm::vec3 applyLightDielectric(
+        const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth, minstd_rand &RNG) {
     float n1 = 1., n2 = intersection.primitive->ior;
     if (intersection.isInside) {
         n1 = n2;
@@ -945,7 +949,7 @@ glm::vec3 applyLightDielectric(const Intersection &intersection, const InputData
     float s = n12 * glm::sqrt(1.f - nl * nl);
 
     if (s > 1.f) {
-        return getReflectedLight(intersection, inputData, rayDepth) + intersection.primitive->emission;
+        return getReflectedLight(intersection, inputData, rayDepth, RNG) + intersection.primitive->emission;
     }
 
     float r0 = (n1 - n2) / (n1 + n2);
@@ -954,15 +958,15 @@ glm::vec3 applyLightDielectric(const Intersection &intersection, const InputData
     float mnlsq = mnl * mnl;
     float r = r0 + (1.f - r0) * mnlsq * mnlsq * mnl;
 
-    if (sampleUniform() < r) {
-        return getReflectedLight(intersection, inputData, rayDepth) + intersection.primitive->emission;
+    if (sampleUniform(RNG) < r) {
+        return getReflectedLight(intersection, inputData, rayDepth, RNG) + intersection.primitive->emission;
     }
 
     glm::vec3 rd = n12 * intersection.d + (n12 * nl - glm::sqrt(1 - s * s)) * intersection.normal;
     rd = glm::normalize(rd);
     Intersection refractedIntersection = intersectScene(
             intersection.p - EPS * intersection.normal, rd, inputData);
-    glm::vec3 refractedColor = applyLight(refractedIntersection, inputData, rayDepth - 1);
+    glm::vec3 refractedColor = applyLight(refractedIntersection, inputData, rayDepth - 1, RNG);
 
     if (!intersection.isInside) {
         refractedColor *= intersection.primitive->color;
@@ -971,7 +975,8 @@ glm::vec3 applyLightDielectric(const Intersection &intersection, const InputData
     return refractedColor + intersection.primitive->emission;
 }
 
-glm::vec3 applyLight(const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth) {
+glm::vec3 applyLight(
+        const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth, minstd_rand &RNG) {
     if (!intersection.isIntersected) {
         return inputData.backgroundColor;
     }
@@ -984,28 +989,29 @@ glm::vec3 applyLight(const Intersection &intersection, const InputData &inputDat
     }
 
     if (intersection.primitive->material == Material::DIFFUSER) {
-        color = applyLightDiffuser(intersection, inputData, rayDepth);
+        color = applyLightDiffuser(intersection, inputData, rayDepth, RNG);
     } else if (intersection.primitive->material == Material::METALLIC) {
-        color = applyLightMetallic(intersection, inputData, rayDepth);
+        color = applyLightMetallic(intersection, inputData, rayDepth, RNG);
     } else if (intersection.primitive->material == Material::DIELECTRIC) {
-        color = applyLightDielectric(intersection, inputData, rayDepth);
+        color = applyLightDielectric(intersection, inputData, rayDepth, RNG);
     }
 
     return color;
 }
 
-glm::vec3 generateSample(uint32_t px, uint32_t py, const InputData &inputData) {
-    float x = (2 * (float(px) + sampleUniform()) / float(inputData.width) - 1) * inputData.cameraFovTan.x;
-    float y = -(2 * (float(py) + sampleUniform()) / float(inputData.height) - 1) * inputData.cameraFovTan.y;
+glm::vec3 generateSample(uint32_t px, uint32_t py, const InputData &inputData, minstd_rand &RNG) {
+    float x = (2 * (float(px) + sampleUniform(RNG)) / float(inputData.width) - 1) * inputData.cameraFovTan.x;
+    float y = -(2 * (float(py) + sampleUniform(RNG)) / float(inputData.height) - 1) * inputData.cameraFovTan.y;
     glm::vec3 d = glm::normalize(x * inputData.cameraRight + y * inputData.cameraUp + inputData.cameraForward);
     Intersection intersection = intersectScene(inputData.cameraPosition, d, inputData);
-    return applyLight(intersection, inputData, inputData.rayDepth);
+    return applyLight(intersection, inputData, inputData.rayDepth, RNG);
 }
 
 glm::vec3 generatePixel(uint32_t px, uint32_t py, const InputData &inputData) {
+    minstd_rand RNG{py * inputData.width + px};
     glm::vec3 color{0., 0., 0.};
     for (uint32_t i = 0; i < inputData.samples; ++i) {
-        color += generateSample(px, py, inputData);
+        color += generateSample(px, py, inputData, RNG);
     }
     color /= inputData.samples;
     color = aces_tonemap(color);
