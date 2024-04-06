@@ -112,6 +112,11 @@ struct AABB {
         return a * b + a * c + b * c;
     }
 
+    bool isInside(const glm::vec3 &p) const {
+        return maxPoint.x > p.x && maxPoint.y > p.y && maxPoint.z > p.z &&
+                minPoint.x < p.x && minPoint.y < p.y && minPoint.z < p.z;
+    }
+
     void extend(glm::vec3 p)
     {
         minPoint = glm::min(minPoint, p);
@@ -151,22 +156,24 @@ struct AABB {
         };
     }
 
-    optional<glm::vec3> intersect(const glm::vec3 &o, const glm::vec3 &d) const {
+    float intersect(const glm::vec3 &o, const glm::vec3 &d) const {
+        if (isInside(o)) {
+            return 0.f;
+        }
+
+        glm::vec3 no = o - center;
+
         glm::vec3 size = maxPoint - minPoint;
-        glm::vec3 t1 = (size - o) / d;
-        glm::vec3 t2 = (-size - o) / d;
+        glm::vec3 t1 = (size - no) / d;
+        glm::vec3 t2 = (-size - no) / d;
 
         float d1 = max(max(min(t1.x, t2.x), min(t1.y, t2.y)), min(t1.z, t2.z));
         float d2 = min(min(max(t1.x, t2.x), max(t1.y, t2.y)), max(t1.z, t2.z));
 
-        if (d1 > d2 || d2 < 0) {
-            return nullopt;
-        }
-
-        if (d1 < 0) {
-            return o + d2 * d;
+        if (d1 > d2 || d2 < 0.f) {
+            return INF;
         } else {
-            return o + d1 * d;
+            return d1;
         }
     }
 };
@@ -538,32 +545,27 @@ struct BVH {
         uint32_t left = nodes[curNode].left;
         uint32_t right = nodes[curNode].right;
 
-        if (nodes[curNode].division == 0 && d.x < 0 ||
-                nodes[curNode].division == 1 && d.y < 0 ||
-                nodes[curNode].division == 2 && d.z < 0) {
-            left = nodes[curNode].right;
+        float leftDistance = nodes[left].aabb.intersect(o, d);
+        float rightDistance = nodes[right].aabb.intersect(o, d);
+
+        if (rightDistance < leftDistance) {
+            left = right;
             right = nodes[curNode].left;
+
+            leftDistance += rightDistance;
+            rightDistance = leftDistance - rightDistance;
+            leftDistance -= rightDistance;
         }
 
-        bool intersectLeft = false;
         if (left != root) {
             Intersection newIntersection = intersect(primitives, o, d, left);
-            intersectLeft = newIntersection.isIntersected;
-            if (intersectLeft &&
+            if (newIntersection.isIntersected &&
                 (!closestIntersection.isIntersected || newIntersection.t < closestIntersection.t)) {
                 closestIntersection = newIntersection;
             }
         }
 
-        float rightDistance = closestIntersection.t + 1.f;
-        if (intersectLeft) {
-            optional<glm::vec3> rightIntersection = nodes[right].aabb.intersect(o, d);
-            if (rightIntersection) {
-                rightDistance = glm::distance(rightIntersection.value(), o);
-            }
-        }
-
-        if (right != root && (!intersectLeft || rightDistance < closestIntersection.t)) {
+        if (right != root && (rightDistance < closestIntersection.t || !closestIntersection.isIntersected)) {
             Intersection newIntersection = intersect(primitives, o, d, right);
             if (newIntersection.isIntersected &&
                 (!closestIntersection.isIntersected || newIntersection.t < closestIntersection.t)) {
@@ -777,7 +779,6 @@ glm::vec3 aces_tonemap(glm::vec3 const & x) {
     return saturate((x*(a*x+b))/(x*(c*x+d)+e));
 }
 
-
 ColorInt colorFloatToInt(glm::vec3 &color) {
     return ColorInt {
         uint8_t(color.x * 255),
@@ -921,7 +922,7 @@ glm::vec3 applyLightDiffuser(
     glm::vec3 w = dis.sample(RNG);
     float p = dis.pdf(w);
     float wn = glm::dot(w, intersection.normal);
-    if (wn < EPS || p < EPS) {
+    if (wn < 0.f || p < EPS) {
         return intersection.primitive->emission;
     }
     Intersection nextIntersection = intersectScene(intersection.p + EPS * intersection.normal, w, inputData);
