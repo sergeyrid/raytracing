@@ -1023,9 +1023,6 @@ SceneFloat generateScene(const InputData &inputData) {
     #pragma omp parallel for schedule(dynamic, 8)
     for (uint32_t ij = 0; ij < inputData.height * inputData.width; ++ij) {
         scene.data[ij] = generatePixel(ij % inputData.width, ij / inputData.width, inputData);
-        if (ij % 1000 == 0) {
-            cout << ij << endl;
-        }
     }
     return scene;
 }
