@@ -189,7 +189,7 @@ struct Primitive {
     bool isPlane = false;
     AABB aabb;
 
-    virtual Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) = 0;
+    virtual Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d, float minDistance = INF) = 0;
 
     virtual glm::vec3 samplePoint(minstd_rand &RNG) = 0;
     virtual float pdf(glm::vec3 o, glm::vec3 d) = 0;
@@ -223,7 +223,7 @@ struct Primitive {
 struct Plane : Primitive {
     glm::vec3 normal{0., 0., 1.};
 
-    Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) override {
+    Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d, float minDistance = INF) override {
         glm::vec3 no = conjRotation * (o - position);
         glm::vec3 nd = conjRotation * d;
 
@@ -252,7 +252,11 @@ struct Ellipsoid : Primitive {
     glm::vec3 radius{1., 1., 1.};
     glm::vec3 radiusSq{1., 1., 1.};
 
-    Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) override {
+    Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d, float minDistance = INF) override {
+        if (aabb.intersect(o, d) > minDistance - EPS) {
+            return Intersection{};
+        }
+
         glm::vec3 no = conjRotation * (o - position);
         glm::vec3 nd = conjRotation * d;
 
@@ -340,7 +344,11 @@ struct Ellipsoid : Primitive {
 struct Box : Primitive {
     glm::vec3 size{1., 1., 1.};
 
-    Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) override {
+    Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d, float minDistance = INF) override {
+        if (aabb.intersect(o, d) > minDistance - EPS) {
+            return Intersection{};
+        }
+
         glm::vec3 no = conjRotation * (o - position);
         glm::vec3 nd = conjRotation * d;
 
@@ -454,7 +462,11 @@ struct Triangle : Primitive {
         pdfConst = 2.f / glm::length(crossProduct);
     }
 
-    Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) override {
+    Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d, float minDistance = INF) override {
+        if (aabb.intersect(o, d) > minDistance - EPS) {
+            return Intersection{};
+        }
+
         glm::vec3 no = conjRotation * (o - position);
         glm::vec3 nd = conjRotation * d;
 
@@ -529,16 +541,17 @@ struct BVH {
         nodes[root].primitiveCount += distance(primitives.begin(), begin);
     }
 
-    Intersection intersect(const vector<shared_ptr<Primitive>> &primitives,
-                           const glm::vec3 &o, const glm::vec3 &d, uint32_t curNode = 0) const {
+    Intersection intersect(const vector<shared_ptr<Primitive>> &primitives, const glm::vec3 &o, const glm::vec3 &d,
+                           uint32_t curNode = 0, float minDistance = INF) const {
         const BVHNode &node = nodes[curNode];
         Intersection closestIntersection;
         for (uint32_t i = node.firstPrimitiveId; i < node.firstPrimitiveId + node.primitiveCount; ++i) {
-            Intersection newIntersection = primitives[i]->intersectPrimitive(o, d);
+            Intersection newIntersection = primitives[i]->intersectPrimitive(o, d, minDistance);
             if (newIntersection.isIntersected &&
                 (!closestIntersection.isIntersected || newIntersection.t < closestIntersection.t)) {
                 closestIntersection = newIntersection;
                 closestIntersection.primitive = primitives[i].get();
+                minDistance = closestIntersection.t;
             }
         }
 
@@ -558,15 +571,16 @@ struct BVH {
         }
 
         if (left != root) {
-            Intersection newIntersection = intersect(primitives, o, d, left);
+            Intersection newIntersection = intersect(primitives, o, d, left, minDistance);
             if (newIntersection.isIntersected &&
                 (!closestIntersection.isIntersected || newIntersection.t < closestIntersection.t)) {
                 closestIntersection = newIntersection;
+                minDistance = closestIntersection.t;
             }
         }
 
         if (right != root && (rightDistance < closestIntersection.t || !closestIntersection.isIntersected)) {
-            Intersection newIntersection = intersect(primitives, o, d, right);
+            Intersection newIntersection = intersect(primitives, o, d, right, minDistance);
             if (newIntersection.isIntersected &&
                 (!closestIntersection.isIntersected || newIntersection.t < closestIntersection.t)) {
                 closestIntersection = newIntersection;
