@@ -853,6 +853,7 @@ InputData parseInput(string &inputPath) {
         if (command == "DIMENSIONS") {
             inputFile >> inputData.width >> inputData.height;
         } else if (command == "RAY_DEPTH") {
+            inputFile >> inputData.rayDepth;
         } else if (command == "SAMPLES") {
             inputFile >> inputData.samples;
             inputData.samples /= 2;
