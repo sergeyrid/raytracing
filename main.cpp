@@ -832,9 +832,12 @@ InputData parseInput(string &inputPath) {
             inputFile >> inputData.width >> inputData.height;
         } else if (command == "RAY_DEPTH") {
             inputFile >> inputData.rayDepth;
+            if (inputData.rayDepth > 2) {
+                --inputData.rayDepth;
+            }
         } else if (command == "SAMPLES") {
             inputFile >> inputData.samples;
-            inputData.samples /= 8;
+            inputData.samples /= 16;
         } else if (command == "BG_COLOR") {
             inputFile >> inputData.backgroundColor.x >> inputData.backgroundColor.y >> inputData.backgroundColor.z;
         } else if (command == "CAMERA_POSITION") {
