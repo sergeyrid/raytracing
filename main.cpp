@@ -18,8 +18,9 @@
 using namespace std;
 
 const float EPS = 0.0001f;
-const float INF = numeric_limits<float>::max();
-const float NEG_INF = numeric_limits<float>::min();
+const float INF = 10000.f;
+const float BIG_INF = 20000.f;
+const float NEG_INF = -10000.f;
 
 struct ColorInt {
     uint8_t red;
@@ -28,22 +29,22 @@ struct ColorInt {
 };
 
 struct SceneInt {
-    uint32_t width;
-    uint32_t height;
+    uint16_t width;
+    uint16_t height;
     vector<ColorInt> data;
 
-    SceneInt(const uint32_t &width, const uint32_t &height) : width(width), height(height) {
+    SceneInt(const uint16_t &width, const uint16_t &height) : width(width), height(height) {
         data = vector<ColorInt>();
         data.reserve(width * height);
     }
 };
 
 struct SceneFloat {
-    uint32_t width;
-    uint32_t height;
+    uint16_t width;
+    uint16_t height;
     vector<glm::vec3> data;
 
-    SceneFloat(const uint32_t &width, const uint32_t &height) : width(width), height(height) {
+    SceneFloat(const uint16_t &width, const uint16_t &height) : width(width), height(height) {
         data = vector<glm::vec3>();
         data.resize(width * height);
     }
@@ -67,6 +68,8 @@ struct Intersection {
     float nl = 0.;
 
     glm::vec3 normal{0., 0., 0.};
+    glm::vec3 pPlusNormalEps{0., 0., 0.};
+    glm::vec3 pMinusNormalEps{0., 0., 0.};
     const Primitive *primitive = nullptr;
 
     void update(const glm::vec3 &o, const glm::vec3 &newD, const Primitive *newPrimitive) {
@@ -77,11 +80,14 @@ struct Intersection {
         nl = -glm::dot(normal, d);
         p = o + t * d;
         primitive = newPrimitive;
+        glm::vec3 normalEps = normal * EPS;
+        pPlusNormalEps = p + normalEps;
+        pMinusNormalEps = p - normalEps;
     }
 };
 
-uint32_t sampleUInt(minstd_rand &RNG, uint32_t a = 0, uint32_t b = 0) {
-    uniform_int_distribution<uint32_t> dis{a, b};
+uint16_t sampleUInt(minstd_rand &RNG, uint16_t a = 0, uint16_t b = 0) {
+    uniform_int_distribution<uint16_t> dis{a, b};
     return dis(RNG);
 }
 
@@ -99,8 +105,10 @@ struct AABB {
     glm::vec3 minPoint{INF, INF, INF};
     glm::vec3 maxPoint{NEG_INF, NEG_INF, NEG_INF};
     glm::vec3 center{0., 0., 0.};
+    glm::vec3 sizePlusCenter{0., 0., 0.};
+    glm::vec3 negSizePlusCenter{0., 0., 0.};
 
-    float area() {
+    float area() const {
         if (minPoint.x > maxPoint.x || minPoint.y > maxPoint.y || minPoint.z > maxPoint.z) {
             return 0.f;
         }
@@ -123,7 +131,7 @@ struct AABB {
         maxPoint = glm::max(maxPoint, p);
     }
 
-    void extend(AABB aabb)
+    void extend(const AABB &aabb)
     {
         minPoint = glm::min(minPoint, aabb.minPoint);
         maxPoint = glm::max(maxPoint, aabb.maxPoint);
@@ -148,12 +156,16 @@ struct AABB {
         maxPoint += translation;
     }
 
-    void calculateCenter() {
+    void calculateEverything() {
         center = glm::vec3 {
                 (maxPoint.x + minPoint.x) / 2.f,
                 (maxPoint.y + minPoint.y) / 2.f,
                 (maxPoint.z + minPoint.z) / 2.f,
         };
+        glm::vec3 size = maxPoint - minPoint;
+        glm::vec3 negSize = -size;
+        sizePlusCenter = size + center;
+        negSizePlusCenter = negSize + center;
     }
 
     float intersect(const glm::vec3 &o, const glm::vec3 &d) const {
@@ -161,17 +173,14 @@ struct AABB {
             return 0.f;
         }
 
-        glm::vec3 no = o - center;
-
-        glm::vec3 size = maxPoint - minPoint;
-        glm::vec3 t1 = (size - no) / d;
-        glm::vec3 t2 = (-size - no) / d;
+        glm::vec3 t1 = (sizePlusCenter - o) / d;
+        glm::vec3 t2 = (negSizePlusCenter - o) / d;
 
         float d1 = max(max(min(t1.x, t2.x), min(t1.y, t2.y)), min(t1.z, t2.z));
         float d2 = min(min(max(t1.x, t2.x), max(t1.y, t2.y)), max(t1.z, t2.z));
 
         if (d1 > d2 || d2 < 0.f) {
-            return INF;
+            return BIG_INF;
         } else {
             return d1;
         }
@@ -196,6 +205,10 @@ struct Primitive {
 
     virtual void calculateAABB() = 0;
 
+    virtual void update() {
+        calculateAABB();
+    }
+
     pair<Intersection, Intersection> intersectFull(const glm::vec3 &o, const glm::vec3 &d) {
         Intersection i1 = intersectPrimitive(o, d);
         if (!i1.isIntersected) {
@@ -203,9 +216,9 @@ struct Primitive {
         }
         Intersection i2;
         if (i1.isInside) {
-            i2 = intersectPrimitive(i1.p + i1.normal * EPS, -d);
+            i2 = intersectPrimitive(i1.pPlusNormalEps, -d);
         } else {
-            i2 = intersectPrimitive(i1.p - i1.normal * EPS, d);
+            i2 = intersectPrimitive(i1.pMinusNormalEps, d);
         }
         return {i1, i2};
     }
@@ -222,13 +235,14 @@ struct Primitive {
 
 struct Plane : Primitive {
     glm::vec3 normal{0., 0., 1.};
+    glm::vec3 rotatedNormal{0., 0., 1.};
 
     Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d, float minDistance = INF) override {
         glm::vec3 no = conjRotation * (o - position);
         glm::vec3 nd = conjRotation * d;
 
         Intersection intersection;
-        intersection.normal = rotation * normal;
+        intersection.normal = rotatedNormal;
         intersection.t = -glm::dot(no, normal) / glm::dot(nd, normal);
         intersection.isIntersected = intersection.t > 0;
         intersection.update(o, d, this);
@@ -246,6 +260,10 @@ struct Plane : Primitive {
     void calculateAABB() override {
         throw bad_function_call();
     }
+
+    void update() override {
+        rotatedNormal = rotation * normal;
+    }
 };
 
 struct Ellipsoid : Primitive {
@@ -253,7 +271,7 @@ struct Ellipsoid : Primitive {
     glm::vec3 radiusSq{1., 1., 1.};
 
     Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d, float minDistance = INF) override {
-        if (aabb.intersect(o, d) > minDistance - EPS) {
+        if (aabb.intersect(o, d) > minDistance) {
             return Intersection{};
         }
 
@@ -320,7 +338,7 @@ struct Ellipsoid : Primitive {
         float rxs = radius.x * radius.x;
         float rys = radius.y * radius.y;
         float rzs = radius.z * radius.z;
-        
+
         glm::vec3 pos1 = conjRotation * (i1.p - position);
         glm::vec3 pos2 = conjRotation * (i1.p - position);
 
@@ -337,7 +355,7 @@ struct Ellipsoid : Primitive {
         aabb.extend(radius);
         aabb.extend(-radius);
         aabb.rotateAndTranslate(rotation, position);
-        aabb.calculateCenter();
+        aabb.calculateEverything();
     }
 };
 
@@ -345,7 +363,7 @@ struct Box : Primitive {
     glm::vec3 size{1., 1., 1.};
 
     Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d, float minDistance = INF) override {
-        if (aabb.intersect(o, d) > minDistance - EPS) {
+        if (aabb.intersect(o, d) > minDistance) {
             return Intersection{};
         }
 
@@ -440,7 +458,7 @@ struct Box : Primitive {
         aabb.extend(size / 2.f);
         aabb.extend(-size / 2.f);
         aabb.rotateAndTranslate(rotation, position);
-        aabb.calculateCenter();
+        aabb.calculateEverything();
     }
 };
 
@@ -454,36 +472,26 @@ struct Triangle : Primitive {
     float pdfConst = 0.;
 
     Triangle(float ax, float ay, float az, float bx, float by, float bz, float cx, float cy, float cz)
-            : pointA(ax, ay, az), pointB(bx, by, bz), pointC(cx, cy, cz) {
-        sideAB = pointB - pointA;
-        sideAC = pointC - pointA;
-        glm::vec3 crossProduct = glm::cross(sideAB, sideAC);
-        normal = glm::normalize(crossProduct);
-        pdfConst = 2.f / glm::length(crossProduct);
-    }
+            : pointA(ax, ay, az), pointB(bx, by, bz), pointC(cx, cy, cz) {}
 
     Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d, float minDistance = INF) override {
-        if (aabb.intersect(o, d) > minDistance - EPS) {
-            return Intersection{};
+        Intersection intersection;
+        if (aabb.intersect(o, d) > minDistance) {
+            return intersection;
         }
 
-        glm::vec3 no = conjRotation * (o - position);
-        glm::vec3 nd = conjRotation * d;
+        glm::vec3 uvt = glm::inverse(glm::mat3x3{sideAB, sideAC, -d}) * (o - pointA);
 
-        glm::vec3 uvt = glm::inverse(glm::mat3x3{sideAB, sideAC, -nd}) * (no - pointA);
-
-        Intersection intersection;
-
-        if (uvt[0] < 0.f || uvt[1] < 0.f || uvt[0] + uvt[1] > 1.f || uvt[2] < 0.f) {
+        if (uvt[0] < 0.f || uvt[1] < 0.f || uvt[2] < 0.f || uvt[2] > minDistance || uvt[0] + uvt[1] > 1.f) {
             return intersection;
         }
 
         intersection.isIntersected = true;
         intersection.t = uvt[2];
-        intersection.normal = rotation * normal;
-        if (glm::dot(normal, nd) > 0.f) {
+        intersection.normal = normal;
+        if (glm::dot(normal, d) > 0.f) {
             intersection.isInside = true;
-            intersection.normal = -intersection.normal;
+            intersection.normal *= -1.f;
         }
 
         intersection.update(o, d, this);
@@ -515,23 +523,37 @@ struct Triangle : Primitive {
         aabb.extend(pointA);
         aabb.extend(pointB);
         aabb.extend(pointC);
-        aabb.rotateAndTranslate(rotation, position);
-        aabb.calculateCenter();
+        aabb.calculateEverything();
+    }
+
+    void update() override {
+        normal = rotation * normal;
+        pointA = rotation * pointA + position;
+        pointB = rotation * pointB + position;
+        pointC = rotation * pointC + position;
+        sideAB = pointB - pointA;
+        sideAC = pointC - pointA;
+        glm::vec3 crossProduct = glm::cross(sideAB, sideAC);
+        normal = glm::normalize(crossProduct);
+        pdfConst = 2.f / glm::length(crossProduct);
+        rotation = glm::quat {0.f, 0.f, 0.f, 1.f};
+        position = glm::vec3 {};
+        calculateAABB();
     }
 };
 
 struct BVHNode {
     AABB aabb;
-    uint32_t left = 0;
-    uint32_t right = 0;
-    uint32_t firstPrimitiveId = 0;
-    uint32_t primitiveCount = 0;
+    uint16_t left = 0;
+    uint16_t right = 0;
+    uint16_t firstPrimitiveId = 0;
+    uint16_t primitiveCount = 0;
     uint8_t division = 0; // 0 - x, 1 - y, 2 - z
 };
 
 struct BVH {
     vector<BVHNode> nodes;
-    uint32_t root = 0;
+    uint16_t root = 0;
 
     void build(vector<shared_ptr<Primitive>> &primitives) {
         auto begin = partition(primitives.begin(), primitives.end(),
@@ -542,10 +564,10 @@ struct BVH {
     }
 
     Intersection intersect(const vector<shared_ptr<Primitive>> &primitives, const glm::vec3 &o, const glm::vec3 &d,
-                           uint32_t curNode = 0, float minDistance = INF) const {
-        const BVHNode &node = nodes[curNode];
+                           uint16_t curNode = 0, float minDistance = INF) const {
         Intersection closestIntersection;
-        for (uint32_t i = node.firstPrimitiveId; i < node.firstPrimitiveId + node.primitiveCount; ++i) {
+
+        for (uint16_t i = nodes[curNode].firstPrimitiveId; i < nodes[curNode].firstPrimitiveId + nodes[curNode].primitiveCount; ++i) {
             Intersection newIntersection = primitives[i]->intersectPrimitive(o, d, minDistance);
             if (newIntersection.isIntersected &&
                 (!closestIntersection.isIntersected || newIntersection.t < closestIntersection.t)) {
@@ -555,8 +577,8 @@ struct BVH {
             }
         }
 
-        uint32_t left = nodes[curNode].left;
-        uint32_t right = nodes[curNode].right;
+        uint16_t left = nodes[curNode].left;
+        uint16_t right = nodes[curNode].right;
 
         float leftDistance = nodes[left].aabb.intersect(o, d);
         float rightDistance = nodes[right].aabb.intersect(o, d);
@@ -570,7 +592,7 @@ struct BVH {
             leftDistance -= rightDistance;
         }
 
-        if (left != root) {
+        if (left != root && leftDistance < minDistance) {
             Intersection newIntersection = intersect(primitives, o, d, left, minDistance);
             if (newIntersection.isIntersected &&
                 (!closestIntersection.isIntersected || newIntersection.t < closestIntersection.t)) {
@@ -579,7 +601,7 @@ struct BVH {
             }
         }
 
-        if (right != root && (rightDistance < closestIntersection.t || !closestIntersection.isIntersected)) {
+        if (right != root && rightDistance < minDistance) {
             Intersection newIntersection = intersect(primitives, o, d, right, minDistance);
             if (newIntersection.isIntersected &&
                 (!closestIntersection.isIntersected || newIntersection.t < closestIntersection.t)) {
@@ -591,17 +613,17 @@ struct BVH {
     }
 
 private:
-    void buildRecursive(vector<shared_ptr<Primitive>> &primitives,
-                        auto begin, auto end) {
-        uint32_t curNode = nodes.size();
+    void buildRecursive(vector<shared_ptr<Primitive>> &primitives, auto begin, auto end) {
+        uint16_t curNode = nodes.size();
         nodes.push_back(BVHNode{});
 
         for (auto i = begin; i != end; ++i) {
             nodes[curNode].aabb.extend((*i)->aabb);
         }
-        uint32_t totalCount = distance(begin, end);
+        nodes[curNode].aabb.calculateEverything();
+        uint16_t totalCount = distance(begin, end);
 
-        if (totalCount <= 4) {
+        if (totalCount <= 1) {
             nodes[curNode].firstPrimitiveId = distance(primitives.begin(), begin);
             nodes[curNode].primitiveCount = totalCount;
             return;
@@ -624,7 +646,7 @@ private:
             AABB totalAABB;
             vector<AABB> leftAABBs(primitives.size() + 1);
             vector<AABB> rightAABBs(primitives.size() + 1);
-            uint32_t j = 0;
+            uint16_t j = 0;
             for (auto i = begin; i != end; ++i) {
                 ++j;
                 totalAABB.extend((*i)->aabb);
@@ -638,7 +660,7 @@ private:
             }
             rightAABBs[0] = leftAABBs.back();
 
-            for (uint32_t i = 1; i < totalCount; ++i) {
+            for (uint16_t i = 1; i < totalCount; ++i) {
                 float newCost = leftAABBs[i].area() * (float)i + rightAABBs[i].area() * (float)(totalCount - i);
                 if (newCost < bestCost) {
                     bestCost = newCost;
@@ -663,10 +685,10 @@ private:
 };
 
 struct InputData {
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint32_t rayDepth = 0;
-    uint32_t samples = 0;
+    uint16_t width = 0;
+    uint16_t height = 0;
+    uint16_t rayDepth = 0;
+    uint16_t samples = 0;
     glm::vec3 backgroundColor{0., 0., 0.};
 
     glm::vec3 cameraPosition{0., 0., 0.};
@@ -717,7 +739,7 @@ struct Cosine : Distribution {
         float y = sampleNormal(RNG);
         float z = sampleNormal(RNG);
         glm::vec3 d{x, y, z};
-        d = glm::normalize(d) + n * (1 + EPS);
+        d = glm::normalize(d) + n * (1.f + EPS);
         return glm::normalize(d);
     }
 
@@ -832,12 +854,12 @@ InputData parseInput(string &inputPath) {
             inputFile >> inputData.width >> inputData.height;
         } else if (command == "RAY_DEPTH") {
             inputFile >> inputData.rayDepth;
-            if (inputData.rayDepth > 2) {
-                --inputData.rayDepth;
+            if (inputData.rayDepth > 4) {
+                inputData.rayDepth -= 2;
             }
         } else if (command == "SAMPLES") {
             inputFile >> inputData.samples;
-            inputData.samples /= 16;
+            inputData.samples /= 4;
         } else if (command == "BG_COLOR") {
             inputFile >> inputData.backgroundColor.x >> inputData.backgroundColor.y >> inputData.backgroundColor.z;
         } else if (command == "CAMERA_POSITION") {
@@ -854,11 +876,9 @@ InputData parseInput(string &inputPath) {
             inputData.cameraFovTan.x = glm::tan(fovX / 2);
         } else if (command == "NEW_PRIMITIVE" && lastPrimitive != nullptr) {
             inputData.primitives.push_back(lastPrimitive);
+            lastPrimitive->update();
             if (glm::length(lastPrimitive->emission) > EPS && !lastPrimitive->isPlane) {
                 inputData.lights.push_back(lastPrimitive.get());
-            }
-            if (!lastPrimitive->isPlane) {
-                lastPrimitive->calculateAABB();
             }
             lastPrimitive = nullptr;
         } else if (command == "PLANE") {
@@ -901,11 +921,9 @@ InputData parseInput(string &inputPath) {
     inputFile.close();
     if (lastPrimitive != nullptr) {
         inputData.primitives.push_back(lastPrimitive);
+        lastPrimitive->update();
         if (glm::length(lastPrimitive->emission) > EPS && !lastPrimitive->isPlane) {
             inputData.lights.push_back(lastPrimitive.get());
-        }
-        if (!lastPrimitive->isPlane) {
-            lastPrimitive->calculateAABB();
         }
     }
     inputData.cameraFovTan.y = inputData.cameraFovTan.x * float(inputData.height) / float(inputData.width);
@@ -922,19 +940,18 @@ Intersection intersectScene(const glm::vec3 &o, const glm::vec3 &d, const InputD
 }
 
 glm::vec3 applyLight(
-        const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth, minstd_rand &RNG);
+        const Intersection &intersection, const InputData &inputData, const uint16_t &rayDepth, minstd_rand &RNG);
 
 glm::vec3 getReflectedLight(
-        const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth, minstd_rand &RNG) {
+        const Intersection &intersection, const InputData &inputData, const uint16_t &rayDepth, minstd_rand &RNG) {
     glm::vec3 rd = intersection.d + 2.f * intersection.normal * intersection.nl;
     rd = glm::normalize(rd);
-    Intersection reflectionIntersection = intersectScene(
-            intersection.p + EPS * intersection.normal, rd, inputData);
+    Intersection reflectionIntersection = intersectScene(intersection.pPlusNormalEps, rd, inputData);
     return applyLight(reflectionIntersection, inputData, rayDepth - 1, RNG);
 }
 
 glm::vec3 applyLightDiffuser(
-        const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth, minstd_rand &RNG) {
+        const Intersection &intersection, const InputData &inputData, const uint16_t &rayDepth, minstd_rand &RNG) {
     Mix dis{intersection.p, intersection.normal, &inputData.lights, intersection.primitive};
     glm::vec3 w = dis.sample(RNG);
     float p = dis.pdf(w);
@@ -942,19 +959,19 @@ glm::vec3 applyLightDiffuser(
     if (wn < 0.f || p < EPS) {
         return intersection.primitive->emission;
     }
-    Intersection nextIntersection = intersectScene(intersection.p + EPS * intersection.normal, w, inputData);
+    Intersection nextIntersection = intersectScene(intersection.pPlusNormalEps, w, inputData);
     glm::vec3 l = applyLight(nextIntersection, inputData, rayDepth - 1, RNG);
     return intersection.primitive->color * l * glm::one_over_pi<float>() * wn / p + intersection.primitive->emission;
 }
 
 glm::vec3 applyLightMetallic(
-        const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth, minstd_rand &RNG) {
+        const Intersection &intersection, const InputData &inputData, const uint16_t &rayDepth, minstd_rand &RNG) {
     glm::vec3 reflectedColor = getReflectedLight(intersection, inputData, rayDepth, RNG);
     return intersection.primitive->color * reflectedColor + intersection.primitive->emission;
 }
 
 glm::vec3 applyLightDielectric(
-        const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth, minstd_rand &RNG) {
+        const Intersection &intersection, const InputData &inputData, const uint16_t &rayDepth, minstd_rand &RNG) {
     float n1 = 1., n2 = intersection.primitive->ior;
     if (intersection.isInside) {
         n1 = n2;
@@ -980,8 +997,7 @@ glm::vec3 applyLightDielectric(
 
     glm::vec3 rd = n12 * intersection.d + (n12 * nl - glm::sqrt(1 - s * s)) * intersection.normal;
     rd = glm::normalize(rd);
-    Intersection refractedIntersection = intersectScene(
-            intersection.p - EPS * intersection.normal, rd, inputData);
+    Intersection refractedIntersection = intersectScene(intersection.pMinusNormalEps, rd, inputData);
     glm::vec3 refractedColor = applyLight(refractedIntersection, inputData, rayDepth - 1, RNG);
 
     if (!intersection.isInside) {
@@ -992,7 +1008,7 @@ glm::vec3 applyLightDielectric(
 }
 
 glm::vec3 applyLight(
-        const Intersection &intersection, const InputData &inputData, const uint32_t &rayDepth, minstd_rand &RNG) {
+        const Intersection &intersection, const InputData &inputData, const uint16_t &rayDepth, minstd_rand &RNG) {
     if (!intersection.isIntersected) {
         return inputData.backgroundColor;
     }
@@ -1015,7 +1031,7 @@ glm::vec3 applyLight(
     return color;
 }
 
-glm::vec3 generateSample(uint32_t px, uint32_t py, const InputData &inputData, minstd_rand &RNG) {
+glm::vec3 generateSample(uint16_t px, uint16_t py, const InputData &inputData, minstd_rand &RNG) {
     float x = (2 * (float(px) + sampleUniform(RNG)) / float(inputData.width) - 1) * inputData.cameraFovTan.x;
     float y = -(2 * (float(py) + sampleUniform(RNG)) / float(inputData.height) - 1) * inputData.cameraFovTan.y;
     glm::vec3 d = glm::normalize(x * inputData.cameraRight + y * inputData.cameraUp + inputData.cameraForward);
@@ -1023,10 +1039,10 @@ glm::vec3 generateSample(uint32_t px, uint32_t py, const InputData &inputData, m
     return applyLight(intersection, inputData, inputData.rayDepth, RNG);
 }
 
-glm::vec3 generatePixel(uint32_t px, uint32_t py, const InputData &inputData) {
-    minstd_rand RNG{py * inputData.width + px};
+glm::vec3 generatePixel(uint16_t px, uint16_t py, const InputData &inputData) {
+    minstd_rand RNG{uint32_t(py * inputData.width + px)};
     glm::vec3 color{0., 0., 0.};
-    for (uint32_t i = 0; i < inputData.samples; ++i) {
+    for (uint16_t i = 0; i < inputData.samples; ++i) {
         color += generateSample(px, py, inputData, RNG);
     }
     color /= inputData.samples;
@@ -1041,7 +1057,7 @@ glm::vec3 generatePixel(uint32_t px, uint32_t py, const InputData &inputData) {
 SceneFloat generateScene(const InputData &inputData) {
     SceneFloat scene(inputData.width, inputData.height);
     #pragma omp parallel for schedule(dynamic, 8)
-    for (uint32_t ij = 0; ij < inputData.height * inputData.width; ++ij) {
+    for (uint32_t ij = 0; ij < uint32_t(inputData.height) * uint32_t(inputData.width); ++ij) {
         scene.data[ij] = generatePixel(ij % inputData.width, ij / inputData.width, inputData);
     }
     return scene;
