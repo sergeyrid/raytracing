@@ -3,9 +3,7 @@
 #include <functional>
 #include <iostream>
 #include <iterator>
-#include <limits>
 #include <memory>
-#include <optional>
 #include <random>
 #include <string>
 #include <vector>
@@ -17,7 +15,7 @@
 
 using namespace std;
 
-const float EPS = 0.0001f;
+const float EPS = 1e-7f;
 const float INF = 10000.f;
 const float BIG_INF = 20000.f;
 const float NEG_INF = -10000.f;
@@ -198,7 +196,7 @@ struct Primitive {
     bool isPlane = false;
     AABB aabb;
 
-    virtual Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d, float minDistance = INF) = 0;
+    virtual Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) = 0;
 
     virtual glm::vec3 samplePoint(minstd_rand &RNG) = 0;
     virtual float pdf(glm::vec3 o, glm::vec3 d) = 0;
@@ -237,14 +235,14 @@ struct Plane : Primitive {
     glm::vec3 normal{0., 0., 1.};
     glm::vec3 rotatedNormal{0., 0., 1.};
 
-    Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d, float minDistance = INF) override {
+    Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) override {
         glm::vec3 no = conjRotation * (o - position);
         glm::vec3 nd = conjRotation * d;
 
         Intersection intersection;
         intersection.normal = rotatedNormal;
         intersection.t = -glm::dot(no, normal) / glm::dot(nd, normal);
-        intersection.isIntersected = intersection.t > 0;
+        intersection.isIntersected = intersection.t > 0.f;
         intersection.update(o, d, this);
         return intersection;
     }
@@ -270,11 +268,7 @@ struct Ellipsoid : Primitive {
     glm::vec3 radius{1., 1., 1.};
     glm::vec3 radiusSq{1., 1., 1.};
 
-    Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d, float minDistance = INF) override {
-        if (aabb.intersect(o, d) > minDistance) {
-            return Intersection{};
-        }
-
+    Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) override {
         glm::vec3 no = conjRotation * (o - position);
         glm::vec3 nd = conjRotation * d;
 
@@ -288,7 +282,7 @@ struct Ellipsoid : Primitive {
         Intersection intersection;
 
         float discr = b * b - c;
-        if (discr < 0) {
+        if (discr < 0.f) {
             return intersection;
         }
         float sqrtDiscr = glm::sqrt(discr);
@@ -296,12 +290,12 @@ struct Ellipsoid : Primitive {
         float mind = -b - sqrtDiscr;
         float maxd = -b + sqrtDiscr;
 
-        if (mind < 0 && maxd > 0) {
+        if (mind < 0.f && maxd > 0.f) {
             intersection.t = maxd;
             intersection.normal = -glm::normalize(rotation * ((no + maxd * nd) / radiusSq));
             intersection.isInside = true;
             intersection.isIntersected = true;
-        } else if (mind > 0) {
+        } else if (mind > 0.f) {
             intersection.t = mind;
             intersection.normal = glm::normalize(rotation * ((no + mind * nd) / radiusSq));
             intersection.isIntersected = true;
@@ -362,11 +356,7 @@ struct Ellipsoid : Primitive {
 struct Box : Primitive {
     glm::vec3 size{1., 1., 1.};
 
-    Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d, float minDistance = INF) override {
-        if (aabb.intersect(o, d) > minDistance) {
-            return Intersection{};
-        }
-
+    Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) override {
         glm::vec3 no = conjRotation * (o - position);
         glm::vec3 nd = conjRotation * d;
 
@@ -378,12 +368,12 @@ struct Box : Primitive {
 
         Intersection intersection;
 
-        if (d1 > d2 || d2 < 0) {
+        if (d1 > d2 || d2 < 0.f) {
             return intersection;
         }
 
         intersection.isIntersected = true;
-        if (d1 < 0) {
+        if (d1 < 0.f) {
             intersection.t = d2;
             intersection.isInside = true;
         } else {
@@ -474,15 +464,12 @@ struct Triangle : Primitive {
     Triangle(float ax, float ay, float az, float bx, float by, float bz, float cx, float cy, float cz)
             : pointA(ax, ay, az), pointB(bx, by, bz), pointC(cx, cy, cz) {}
 
-    Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d, float minDistance = INF) override {
+    Intersection intersectPrimitive(const glm::vec3 &o, const glm::vec3 &d) override {
         Intersection intersection;
-        if (aabb.intersect(o, d) > minDistance) {
-            return intersection;
-        }
 
         glm::vec3 uvt = glm::inverse(glm::mat3x3{sideAB, sideAC, -d}) * (o - pointA);
 
-        if (uvt[0] < 0.f || uvt[1] < 0.f || uvt[2] < 0.f || uvt[2] > minDistance || uvt[0] + uvt[1] > 1.f) {
+        if (uvt[0] < 0.f || uvt[1] < 0.f || uvt[2] < 0.f || uvt[0] + uvt[1] > 1.f) {
             return intersection;
         }
 
@@ -564,16 +551,15 @@ struct BVH {
     }
 
     Intersection intersect(const vector<shared_ptr<Primitive>> &primitives, const glm::vec3 &o, const glm::vec3 &d,
-                           uint16_t curNode = 0, float minDistance = INF) const {
+                           uint16_t curNode = 0) const {
         Intersection closestIntersection;
 
         for (uint16_t i = nodes[curNode].firstPrimitiveId; i < nodes[curNode].firstPrimitiveId + nodes[curNode].primitiveCount; ++i) {
-            Intersection newIntersection = primitives[i]->intersectPrimitive(o, d, minDistance);
+            Intersection newIntersection = primitives[i]->intersectPrimitive(o, d);
             if (newIntersection.isIntersected &&
                 (!closestIntersection.isIntersected || newIntersection.t < closestIntersection.t)) {
                 closestIntersection = newIntersection;
                 closestIntersection.primitive = primitives[i].get();
-                minDistance = closestIntersection.t;
             }
         }
 
@@ -583,26 +569,16 @@ struct BVH {
         float leftDistance = nodes[left].aabb.intersect(o, d);
         float rightDistance = nodes[right].aabb.intersect(o, d);
 
-        if (rightDistance < leftDistance) {
-            left = right;
-            right = nodes[curNode].left;
-
-            leftDistance += rightDistance;
-            rightDistance = leftDistance - rightDistance;
-            leftDistance -= rightDistance;
-        }
-
-        if (left != root && leftDistance < minDistance) {
-            Intersection newIntersection = intersect(primitives, o, d, left, minDistance);
+        if (left != root && leftDistance < INF) {
+            Intersection newIntersection = intersect(primitives, o, d, left);
             if (newIntersection.isIntersected &&
                 (!closestIntersection.isIntersected || newIntersection.t < closestIntersection.t)) {
                 closestIntersection = newIntersection;
-                minDistance = closestIntersection.t;
             }
         }
 
-        if (right != root && rightDistance < minDistance) {
-            Intersection newIntersection = intersect(primitives, o, d, right, minDistance);
+        if (right != root && rightDistance < INF) {
+            Intersection newIntersection = intersect(primitives, o, d, right);
             if (newIntersection.isIntersected &&
                 (!closestIntersection.isIntersected || newIntersection.t < closestIntersection.t)) {
                 closestIntersection = newIntersection;
