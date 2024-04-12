@@ -670,6 +670,16 @@ private:
             }
         }
 
+        sort(begin, end, [this, curNode](shared_ptr<Primitive> &p1, shared_ptr<Primitive> &p2) {
+            if (nodes[curNode].division == 0) {
+                return p1->aabb.center.x < p2->aabb.center.x;
+            } else if (nodes[curNode].division == 1) {
+                return p1->aabb.center.y < p2->aabb.center.y;
+            } else {
+                return p1->aabb.center.z < p2->aabb.center.z;
+            }
+        });
+
         if (middle == end) {
             nodes[curNode].firstPrimitiveId = distance(primitives.begin(), end);
             nodes[curNode].primitiveCount = totalCount;
@@ -854,12 +864,8 @@ InputData parseInput(string &inputPath) {
             inputFile >> inputData.width >> inputData.height;
         } else if (command == "RAY_DEPTH") {
             inputFile >> inputData.rayDepth;
-            if (inputData.rayDepth > 4) {
-                inputData.rayDepth -= 2;
-            }
         } else if (command == "SAMPLES") {
             inputFile >> inputData.samples;
-            inputData.samples /= 2;
         } else if (command == "BG_COLOR") {
             inputFile >> inputData.backgroundColor.x >> inputData.backgroundColor.y >> inputData.backgroundColor.z;
         } else if (command == "CAMERA_POSITION") {
