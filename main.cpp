@@ -623,7 +623,7 @@ private:
         nodes[curNode].aabb.calculateEverything();
         uint16_t totalCount = distance(begin, end);
 
-        if (totalCount <= 1) {
+        if (totalCount <= 4) {
             nodes[curNode].firstPrimitiveId = distance(primitives.begin(), begin);
             nodes[curNode].primitiveCount = totalCount;
             return;
