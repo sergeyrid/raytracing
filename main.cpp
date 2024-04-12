@@ -15,7 +15,7 @@
 
 using namespace std;
 
-const float EPS = 1e-7f;
+const float EPS = 1e-5f;
 const float INF = 10000.f;
 const float BIG_INF = 20000.f;
 const float NEG_INF = -10000.f;
@@ -775,7 +775,7 @@ struct Mix : Distribution {
             Distribution(x, n), cosine(x, n), lightSurface(x, n, lights, primitive) {}
 
     glm::vec3 sample(minstd_rand &RNG) override {
-        bool c = sampleUniform(RNG) < 0.5f;
+        bool c = sampleUniform(RNG) < 0.9f;
         if (c) {
             return cosine.sample(RNG);
         } else {
@@ -784,7 +784,7 @@ struct Mix : Distribution {
     }
 
     float pdf(glm::vec3 d) override {
-        return 0.5f * cosine.pdf(d) + 0.5f * lightSurface.pdf(d);
+        return 0.9f * cosine.pdf(d) + 0.1f * lightSurface.pdf(d);
     }
 };
 
