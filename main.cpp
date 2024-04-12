@@ -775,7 +775,7 @@ struct Mix : Distribution {
             Distribution(x, n), cosine(x, n), lightSurface(x, n, lights, primitive) {}
 
     glm::vec3 sample(minstd_rand &RNG) override {
-        bool c = sampleUniform(RNG) < 0.9f;
+        bool c = sampleUniform(RNG) < 0.8f;
         if (c) {
             return cosine.sample(RNG);
         } else {
@@ -784,7 +784,7 @@ struct Mix : Distribution {
     }
 
     float pdf(glm::vec3 d) override {
-        return 0.9f * cosine.pdf(d) + 0.1f * lightSurface.pdf(d);
+        return 0.8f * cosine.pdf(d) + 0.2f * lightSurface.pdf(d);
     }
 };
 
