@@ -15,7 +15,7 @@
 
 using namespace std;
 
-const float EPS = 1e-5f;
+const float EPS = 0.0001f;
 const float INF = 10000.f;
 const float BIG_INF = 20000.f;
 const float NEG_INF = -10000.f;
@@ -524,7 +524,7 @@ struct Triangle : Primitive {
         normal = glm::normalize(crossProduct);
         pdfConst = 2.f / glm::length(crossProduct);
         rotation = glm::quat {0.f, 0.f, 0.f, 1.f};
-        position = glm::vec3 {};
+        position = glm::vec3 {0.f, 0.f, 0.f};
         calculateAABB();
     }
 };
@@ -559,7 +559,6 @@ struct BVH {
             if (newIntersection.isIntersected &&
                 (!closestIntersection.isIntersected || newIntersection.t < closestIntersection.t)) {
                 closestIntersection = newIntersection;
-                closestIntersection.primitive = primitives[i].get();
             }
         }
 
@@ -775,7 +774,7 @@ struct Mix : Distribution {
             Distribution(x, n), cosine(x, n), lightSurface(x, n, lights, primitive) {}
 
     glm::vec3 sample(minstd_rand &RNG) override {
-        bool c = sampleUniform(RNG) < 0.7f;
+        bool c = sampleUniform(RNG) < 0.5f;
         if (c) {
             return cosine.sample(RNG);
         } else {
@@ -784,7 +783,7 @@ struct Mix : Distribution {
     }
 
     float pdf(glm::vec3 d) override {
-        return 0.7f * cosine.pdf(d) + 0.3f * lightSurface.pdf(d);
+        return 0.5f * cosine.pdf(d) + 0.5f * lightSurface.pdf(d);
     }
 };
 
@@ -835,6 +834,7 @@ InputData parseInput(string &inputPath) {
 
     string command;
     shared_ptr<Primitive> lastPrimitive = nullptr;
+    bool isTriangle = false;
     while (inputFile >> command) {
         if (command == "DIMENSIONS") {
             inputFile >> inputData.width >> inputData.height;
@@ -859,7 +859,7 @@ InputData parseInput(string &inputPath) {
         } else if (command == "NEW_PRIMITIVE" && lastPrimitive != nullptr) {
             inputData.primitives.push_back(lastPrimitive);
             lastPrimitive->update();
-            if (glm::length(lastPrimitive->emission) > EPS && !lastPrimitive->isPlane) {
+            if (glm::length(lastPrimitive->emission) > EPS && !lastPrimitive->isPlane && !isTriangle) {
                 inputData.lights.push_back(lastPrimitive.get());
             }
             lastPrimitive = nullptr;
@@ -879,6 +879,7 @@ InputData parseInput(string &inputPath) {
             inputFile >> newBox->size.x >> newBox->size.y >> newBox->size.z;
             lastPrimitive = newBox;
         } else if (command == "TRIANGLE") {
+            isTriangle = true;
             float ax, ay, az, bx, by, bz, cx, cy, cz;
             inputFile >> ax >> ay >> az >> bx >> by >> bz >> cx >> cy >> cz;
             lastPrimitive = std::make_shared<Triangle>(ax, ay, az, bx, by, bz, cx, cy, cz);
@@ -904,7 +905,7 @@ InputData parseInput(string &inputPath) {
     if (lastPrimitive != nullptr) {
         inputData.primitives.push_back(lastPrimitive);
         lastPrimitive->update();
-        if (glm::length(lastPrimitive->emission) > EPS && !lastPrimitive->isPlane) {
+        if (glm::length(lastPrimitive->emission) > EPS && !lastPrimitive->isPlane && !isTriangle) {
             inputData.lights.push_back(lastPrimitive.get());
         }
     }
