@@ -60,7 +60,7 @@ struct Intersection {
     bool isIntersected = false;
     bool isInside = false;
 
-    float t = 0.;
+    float t = INF;
     glm::vec3 p{0., 0., 0.};
     glm::vec3 d{0., 0., 0.};
     float nl = 0.;
@@ -243,6 +243,9 @@ struct Plane : Primitive {
         intersection.normal = rotatedNormal;
         intersection.t = -glm::dot(no, normal) / glm::dot(nd, normal);
         intersection.isIntersected = intersection.t > 0.f;
+        if (!intersection.isIntersected) {
+            intersection.t = INF;
+        }
         intersection.update(o, d, this);
         return intersection;
     }
@@ -493,7 +496,7 @@ struct Triangle : Primitive {
             u = 1.f - u;
             v = 1.f - v;
         }
-        return rotation * (pointA + u * sideAB + v * sideAC) + position;
+        return pointA + u * sideAB + v * sideAC;
     }
 
     float pdf(glm::vec3 o, glm::vec3 d) override {
@@ -514,7 +517,6 @@ struct Triangle : Primitive {
     }
 
     void update() override {
-        normal = rotation * normal;
         pointA = rotation * pointA + position;
         pointB = rotation * pointB + position;
         pointC = rotation * pointC + position;
@@ -523,8 +525,8 @@ struct Triangle : Primitive {
         glm::vec3 crossProduct = glm::cross(sideAB, sideAC);
         normal = glm::normalize(crossProduct);
         pdfConst = 2.f / glm::length(crossProduct);
-        rotation = glm::quat {0.f, 0.f, 0.f, 1.f};
-        position = glm::vec3 {0.f, 0.f, 0.f};
+        rotation = glm::quat{};
+        position = glm::vec3{};
         calculateAABB();
     }
 };
@@ -551,7 +553,7 @@ struct BVH {
     }
 
     Intersection intersect(const vector<shared_ptr<Primitive>> &primitives, const glm::vec3 &o, const glm::vec3 &d,
-                           uint16_t curNode = 0) const {
+                           uint16_t curNode = 0, float minDistance = INF) const {
         Intersection closestIntersection;
 
         for (uint16_t i = nodes[curNode].firstPrimitiveId; i < nodes[curNode].firstPrimitiveId + nodes[curNode].primitiveCount; ++i) {
@@ -561,6 +563,7 @@ struct BVH {
                 closestIntersection = newIntersection;
             }
         }
+        minDistance = closestIntersection.t;
 
         uint16_t left = nodes[curNode].left;
         uint16_t right = nodes[curNode].right;
@@ -568,16 +571,25 @@ struct BVH {
         float leftDistance = nodes[left].aabb.intersect(o, d);
         float rightDistance = nodes[right].aabb.intersect(o, d);
 
-        if (left != root && leftDistance < INF) {
-            Intersection newIntersection = intersect(primitives, o, d, left);
+        if (leftDistance > rightDistance) {
+            left = right;
+            right = nodes[curNode].left;
+            leftDistance += rightDistance;
+            rightDistance = leftDistance - rightDistance;
+            leftDistance -= rightDistance;
+        }
+
+        if (left != root && leftDistance < minDistance) {
+            Intersection newIntersection = intersect(primitives, o, d, left, minDistance);
             if (newIntersection.isIntersected &&
                 (!closestIntersection.isIntersected || newIntersection.t < closestIntersection.t)) {
                 closestIntersection = newIntersection;
+                minDistance = closestIntersection.t;
             }
         }
 
-        if (right != root && rightDistance < INF) {
-            Intersection newIntersection = intersect(primitives, o, d, right);
+        if (right != root && rightDistance < minDistance) {
+            Intersection newIntersection = intersect(primitives, o, d, right, minDistance);
             if (newIntersection.isIntersected &&
                 (!closestIntersection.isIntersected || newIntersection.t < closestIntersection.t)) {
                 closestIntersection = newIntersection;
@@ -834,7 +846,6 @@ InputData parseInput(string &inputPath) {
 
     string command;
     shared_ptr<Primitive> lastPrimitive = nullptr;
-    bool isTriangle = false;
     while (inputFile >> command) {
         if (command == "DIMENSIONS") {
             inputFile >> inputData.width >> inputData.height;
@@ -842,7 +853,6 @@ InputData parseInput(string &inputPath) {
             inputFile >> inputData.rayDepth;
         } else if (command == "SAMPLES") {
             inputFile >> inputData.samples;
-            inputData.samples *= 3;
         } else if (command == "BG_COLOR") {
             inputFile >> inputData.backgroundColor.x >> inputData.backgroundColor.y >> inputData.backgroundColor.z;
         } else if (command == "CAMERA_POSITION") {
@@ -860,7 +870,7 @@ InputData parseInput(string &inputPath) {
         } else if (command == "NEW_PRIMITIVE" && lastPrimitive != nullptr) {
             inputData.primitives.push_back(lastPrimitive);
             lastPrimitive->update();
-            if (glm::length(lastPrimitive->emission) > EPS && !lastPrimitive->isPlane && !isTriangle) {
+            if (glm::length(lastPrimitive->emission) > EPS && !lastPrimitive->isPlane) {
                 inputData.lights.push_back(lastPrimitive.get());
             }
             lastPrimitive = nullptr;
@@ -880,7 +890,6 @@ InputData parseInput(string &inputPath) {
             inputFile >> newBox->size.x >> newBox->size.y >> newBox->size.z;
             lastPrimitive = newBox;
         } else if (command == "TRIANGLE") {
-            isTriangle = true;
             float ax, ay, az, bx, by, bz, cx, cy, cz;
             inputFile >> ax >> ay >> az >> bx >> by >> bz >> cx >> cy >> cz;
             lastPrimitive = std::make_shared<Triangle>(ax, ay, az, bx, by, bz, cx, cy, cz);
@@ -906,7 +915,7 @@ InputData parseInput(string &inputPath) {
     if (lastPrimitive != nullptr) {
         inputData.primitives.push_back(lastPrimitive);
         lastPrimitive->update();
-        if (glm::length(lastPrimitive->emission) > EPS && !lastPrimitive->isPlane && !isTriangle) {
+        if (glm::length(lastPrimitive->emission) > EPS && !lastPrimitive->isPlane) {
             inputData.lights.push_back(lastPrimitive.get());
         }
     }
