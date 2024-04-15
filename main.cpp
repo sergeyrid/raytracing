@@ -945,7 +945,7 @@ glm::vec3 getReflectedLight(
 
 glm::vec3 applyLightDiffuser(
         const Intersection &intersection, const InputData &inputData, const uint16_t &rayDepth, minstd_rand &RNG) {
-    Mix dis{intersection.p, intersection.normal, &inputData.lights, intersection.primitive};
+    Mix dis{intersection.pPlusNormalEps, intersection.normal, &inputData.lights, intersection.primitive};
     glm::vec3 w = dis.sample(RNG);
     float p = dis.pdf(w);
     float wn = glm::dot(w, intersection.normal);
