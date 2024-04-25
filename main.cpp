@@ -10,10 +10,14 @@
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <glm/gtx/quaternion.hpp>
 
 #include <omp.h>
 
+#include "json.hpp"
+
 using namespace std;
+using json = nlohmann::json;
 
 const float EPS = 0.0001f;
 const float INF = 10000.f;
@@ -52,6 +56,13 @@ enum class Material {
     DIFFUSER,
     METALLIC,
     DIELECTRIC,
+};
+
+struct MaterialData {
+    glm::vec3 color{1., 1., 1.};
+    glm::vec3 emission{0., 0., 0.};
+    Material material = Material::METALLIC;
+    float ior = 1.5;
 };
 
 struct Primitive;
@@ -189,10 +200,7 @@ struct Primitive {
     glm::vec3 position{0., 0., 0.};
     glm::quat rotation{1., 0., 0., 0.};
     glm::quat conjRotation{1., 0., 0., 0.};
-    glm::vec3 color{0., 0., 0.};
-    glm::vec3 emission{0., 0., 0.};
-    Material material = Material::DIFFUSER;
-    float ior = 1.;
+    shared_ptr<MaterialData> material;
     bool isPlane = false;
     AABB aabb;
 
@@ -517,15 +525,12 @@ struct Triangle : Primitive {
     }
 
     void update() override {
-        pointA = rotation * pointA + position;
-        pointB = rotation * pointB + position;
-        pointC = rotation * pointC + position;
         sideAB = pointB - pointA;
         sideAC = pointC - pointA;
         glm::vec3 crossProduct = glm::cross(sideAB, sideAC);
         normal = glm::normalize(crossProduct);
         pdfConst = 2.f / glm::length(crossProduct);
-        rotation = glm::quat{};
+        rotation = glm::quat{1.f, 0.f, 0.f, 0.f};
         position = glm::vec3{};
         calculateAABB();
     }
@@ -684,14 +689,14 @@ private:
 struct InputData {
     uint16_t width = 0;
     uint16_t height = 0;
-    uint16_t rayDepth = 0;
+    const uint16_t rayDepth = 6;
     uint16_t samples = 0;
     glm::vec3 backgroundColor{0., 0., 0.};
 
     glm::vec3 cameraPosition{0., 0., 0.};
     glm::vec3 cameraRight{1., 0., 0.};
     glm::vec3 cameraUp{0., 1., 0.};
-    glm::vec3 cameraForward{0., 0., 1.};
+    glm::vec3 cameraForward{0., 0., -1.};
     glm::vec2 cameraFovTan{0., 0.};
 
     vector<shared_ptr<Primitive>> primitives;
@@ -799,6 +804,26 @@ struct Mix : Distribution {
     }
 };
 
+struct BufferView {
+    size_t buffer;
+    size_t byteLength;
+    size_t byteOffset;
+};
+
+struct GLTFPrimitive {
+    size_t position;
+    size_t indices;
+    size_t material;
+};
+
+struct Accessor {
+    size_t bufferView;
+    size_t count;
+    size_t componentType;
+    string type;
+    size_t byteOffset;
+};
+
 glm::vec3 saturate(const glm::vec3 &color) {
     return glm::clamp(color, 0.f, 1.f);
 }
@@ -838,88 +863,231 @@ void printImage(SceneFloat &scene, string &outputPath) {
     outputFile.close();
 }
 
-InputData parseInput(string &inputPath) {
+InputData parseGLTF(string &inputPath, uint32_t width, uint32_t height) {
     double start = omp_get_wtime();;
     ifstream inputFile(inputPath);
-
+    json data = json::parse(inputFile);
     InputData inputData;
+    inputData.width = width;
+    inputData.height = height;
 
-    string command;
-    shared_ptr<Primitive> lastPrimitive = nullptr;
-    while (inputFile >> command) {
-        if (command == "DIMENSIONS") {
-            inputFile >> inputData.width >> inputData.height;
-        } else if (command == "RAY_DEPTH") {
-            inputFile >> inputData.rayDepth;
-        } else if (command == "SAMPLES") {
-            inputFile >> inputData.samples;
-        } else if (command == "BG_COLOR") {
-            inputFile >> inputData.backgroundColor.x >> inputData.backgroundColor.y >> inputData.backgroundColor.z;
-        } else if (command == "CAMERA_POSITION") {
-            inputFile >> inputData.cameraPosition.x >> inputData.cameraPosition.y >> inputData.cameraPosition.z;
-        } else if (command == "CAMERA_RIGHT") {
-            inputFile >> inputData.cameraRight.x >> inputData.cameraRight.y >> inputData.cameraRight.z;
-        } else if (command == "CAMERA_UP") {
-            inputFile >> inputData.cameraUp.x >> inputData.cameraUp.y >> inputData.cameraUp.z;
-        } else if (command == "CAMERA_FORWARD") {
-            inputFile >> inputData.cameraForward.x >> inputData.cameraForward.y >> inputData.cameraForward.z;
-        } else if (command == "CAMERA_FOV_X") {
-            float fovX;
-            inputFile >> fovX;
-            inputData.cameraFovTan.x = glm::tan(fovX / 2);
-        } else if (command == "NEW_PRIMITIVE" && lastPrimitive != nullptr) {
-            inputData.primitives.push_back(lastPrimitive);
-            lastPrimitive->update();
-            if (glm::length(lastPrimitive->emission) > EPS && !lastPrimitive->isPlane) {
-                inputData.lights.push_back(lastPrimitive.get());
+    vector<vector<char>> buffers;
+    for (const auto &buffer: data["buffers"]) {
+        uint32_t bufferSize = buffer["byteLength"];
+        vector<char> bufferData(bufferSize);
+        const auto bufferPath = filesystem::path(inputPath).parent_path()
+                .append(string(buffer["uri"]));
+        ifstream(bufferPath, ios::binary).read(bufferData.data(), bufferSize);
+        buffers.push_back(bufferData);
+    }
+
+    vector<BufferView> bufferViews;
+    for (const auto &bufferView: data["bufferViews"]) {
+        bufferViews.emplace_back(
+                bufferView["buffer"], bufferView["byteLength"], bufferView["byteOffset"]);
+    }
+
+    vector<shared_ptr<MaterialData>>materials;
+    for (const auto &material: data["materials"]) {
+        shared_ptr<MaterialData> materialData(new MaterialData);
+
+        if (material.contains("pbrMetallicRoughness")) {
+            auto roughness = material["pbrMetallicRoughness"];
+            if (roughness.contains("metallicFactor") && roughness["metallicFactor"] < EPS) {
+                materialData->material = Material::DIFFUSER;
             }
-            lastPrimitive = nullptr;
-        } else if (command == "PLANE") {
-            std::shared_ptr<Plane> newPlane(new Plane());
-            inputFile >> newPlane->normal.x >> newPlane->normal.y >> newPlane->normal.z;
-            newPlane->normal = glm::normalize(newPlane->normal);
-            newPlane->isPlane = true;
-            lastPrimitive = newPlane;
-        } else if (command == "ELLIPSOID") {
-            std::shared_ptr<Ellipsoid> newEllipsoid(new Ellipsoid());
-            inputFile >> newEllipsoid->radius.x >> newEllipsoid->radius.y >> newEllipsoid->radius.z;
-            newEllipsoid->radiusSq = newEllipsoid->radius * newEllipsoid->radius;
-            lastPrimitive = newEllipsoid;
-        } else if (command == "BOX") {
-            std::shared_ptr<Box> newBox(new Box());
-            inputFile >> newBox->size.x >> newBox->size.y >> newBox->size.z;
-            lastPrimitive = newBox;
-        } else if (command == "TRIANGLE") {
-            float ax, ay, az, bx, by, bz, cx, cy, cz;
-            inputFile >> ax >> ay >> az >> bx >> by >> bz >> cx >> cy >> cz;
-            lastPrimitive = std::make_shared<Triangle>(ax, ay, az, bx, by, bz, cx, cy, cz);
-        } else if (command == "POSITION") {
-            inputFile >> lastPrimitive->position.x >> lastPrimitive->position.y >> lastPrimitive->position.z;
-        } else if (command == "ROTATION") {
-            inputFile >> lastPrimitive->rotation.x >> lastPrimitive->rotation.y;
-            inputFile >> lastPrimitive->rotation.z >> lastPrimitive->rotation.w;
-            lastPrimitive->conjRotation = glm::conjugate(lastPrimitive->rotation);
-        } else if (command == "COLOR") {
-            inputFile >> lastPrimitive->color.x >> lastPrimitive->color.y >> lastPrimitive->color.z;
-        } else if (command == "EMISSION") {
-            inputFile >> lastPrimitive->emission.x >> lastPrimitive->emission.y >> lastPrimitive->emission.z;
-        } else if (command == "METALLIC") {
-            lastPrimitive->material = Material::METALLIC;
-        } else if (command == "DIELECTRIC") {
-            lastPrimitive->material = Material::DIELECTRIC;
-        } else if (command == "IOR") {
-            inputFile >> lastPrimitive->ior;
+            if (roughness.contains("baseColorFactor")) {
+                auto color = roughness["baseColorFactor"];
+                materialData->color.x = color[0];
+                materialData->color.y = color[1];
+                materialData->color.z = color[2];
+                if (color[3] < 1.f - EPS) {
+                    materialData->material = Material::DIELECTRIC;
+                }
+            }
+        }
+
+        if (material.contains("emissiveFactor")) {
+            auto emission = material["emissiveFactor"];
+            materialData->emission.x = emission[0];
+            materialData->emission.y = emission[1];
+            materialData->emission.z = emission[2];
+        }
+
+        if (material.contains("extensions") &&
+                material["extensions"].contains("KHR_materials_emissive_strength")) {
+            float emissiveStrength = material["extensions"]["KHR_materials_emissive_strength"]["emissiveStrength"];
+            materialData->emission *= emissiveStrength;
+        }
+
+        materials.push_back(materialData);
+    }
+
+    vector<vector<GLTFPrimitive>> meshes;
+    for (const auto &mesh: data["meshes"]) {
+        vector<GLTFPrimitive> meshData;
+        for (const auto &primitive: mesh["primitives"]) {
+            meshData.emplace_back(primitive["attributes"]["POSITION"],
+                                  primitive["indices"], primitive["material"]);
+        }
+        meshes.push_back(meshData);
+    }
+
+    vector<Accessor> accessors;
+    for (const auto &accessor: data["accessors"]) {
+        accessors.emplace_back(accessor["bufferView"], accessor["count"],
+                               accessor["componentType"], accessor["type"], 0);
+        if (accessor.contains("byteOffset")) {
+            accessors[accessors.size() - 1].byteOffset = accessor["byteOffset"];
         }
     }
+
+    vector<shared_ptr<Primitive>> primitives;
+    vector<glm::mat4x4> transitions;
+    vector<vector<uint16_t>> children;
+    for (const auto &node: data["nodes"]) {
+        glm::vec3 translation{0.f, 0.f, 0.f};
+        if (node.contains("translation")) {
+            translation.x = node["translation"][0];
+            translation.y = node["translation"][1];
+            translation.z = node["translation"][2];
+        }
+        glm::mat4x4 translationMatrix {
+                1.f, 0.f, 0.f, translation.x,
+                0.f, 1.f, 0.f, translation.y,
+                0.f, 0.f, 1.f, translation.z,
+                0.f, 0.f, 0.f, 1.f,
+        };
+
+        glm::quat rotation{1.f, 0.f, 0.f, 0.f};
+        if (node.contains("rotation")) {
+            rotation.x = node["rotation"][0];
+            rotation.y = node["rotation"][1];
+            rotation.z = node["rotation"][2];
+            rotation.w = node["rotation"][3];
+        }
+        glm::mat4x4 rotationMatrix = glm::transpose(glm::toMat4(rotation));
+
+        glm::vec3 scale{1.f, 1.f, 1.f};
+        if (node.contains("scale")) {
+            scale.x = node["scale"][0];
+            scale.y = node["scale"][1];
+            scale.z = node["scale"][2];
+        }
+        glm::mat4x4 scaleMat {
+                scale.x, 0.f, 0.f, 0.f,
+                0.f, scale.y, 0.f, 0.f,
+                0.f, 0.f, scale.z, 0.f,
+                0.f, 0.f, 0.f, 1.f,
+        };
+
+        glm::mat4x4 transition = glm::transpose(scaleMat * rotationMatrix * translationMatrix);
+
+        if (node.contains("matrix")) {
+            transition = glm::mat4x4(node["matrix"]);
+        }
+
+        transitions.push_back(transition);
+
+        if (node.contains("children")) {
+            children.emplace_back(node["children"]);
+        } else {
+            children.emplace_back();
+        }
+
+        if (node.contains("camera")) {
+            inputData.cameraFovTan.y = glm::tan(float(
+                    data["cameras"][size_t(node["camera"])]["perspective"]["yfov"]) / 2.f);
+            inputData.cameraPosition = translation;
+            inputData.cameraRight = rotation * inputData.cameraRight;
+            inputData.cameraUp = rotation * inputData.cameraUp;
+            inputData.cameraForward = rotation * inputData.cameraForward;
+        }
+    }
+
+    for (size_t i = 0; i < transitions.size(); ++i) {
+        for (const auto &child: children[i]) {
+            transitions[child] = transitions[i] * transitions[child];
+        }
+    }
+
+    for (size_t i = 0; i < transitions.size(); ++i) {
+        if (!data["nodes"][i].contains("mesh")) {
+            continue;
+        }
+
+        for (const auto &primitive: meshes[size_t(data["nodes"][i]["mesh"])]) {
+            std::vector<glm::vec3> points;
+            const auto &accessorPosition = accessors[primitive.position];
+            const auto &bufferViewPosition = bufferViews[accessorPosition.bufferView];
+            const auto &bufferPosition = buffers[bufferViewPosition.buffer];
+            size_t offset = bufferViewPosition.byteOffset + accessorPosition.byteOffset;
+
+            if (accessorPosition.type != "VEC3") {
+                throw runtime_error("Unsupported accessor type, expected VEC3");
+            }
+
+            for (size_t j = 0; j < accessorPosition.count; ++j) {
+                points.emplace_back(
+                        *(reinterpret_cast<const float*>(bufferPosition.data() + offset + 12 * j)),
+                        *(reinterpret_cast<const float*>(bufferPosition.data() + offset + 12 * j + 4)),
+                        *(reinterpret_cast<const float*>(bufferPosition.data() + offset + 12 * j + 8))
+                        );
+            }
+
+            const auto &accessorIndices = accessors[primitive.indices];
+            const auto &bufferViewIndices = bufferViews[accessorIndices.bufferView];
+            const auto &bufferIndices = buffers[bufferViewIndices.buffer];
+
+            if (accessorIndices.type != "SCALAR") {
+                throw runtime_error("Unsupported accessor type, expected SCALAR");
+            }
+
+            for (size_t j = 0; j < accessorIndices.count; j += 3) {
+                size_t posA, posB, posC;
+                if (accessorIndices.componentType == 5123) {
+                    posA = *(reinterpret_cast<const uint16_t*>(bufferIndices.data() +
+                            bufferViewIndices.byteOffset + 2 * j));
+                    posB = *(reinterpret_cast<const uint16_t*>(bufferIndices.data() +
+                            bufferViewIndices.byteOffset + 2 * (j + 1)));
+                    posC = *(reinterpret_cast<const uint16_t*>(bufferIndices.data() +
+                            bufferViewIndices.byteOffset + 2 * (j + 2)));
+                } else if (accessorIndices.componentType == 5125) {
+                    posA = *(reinterpret_cast<const uint32_t*>(bufferIndices.data() +
+                            bufferViewIndices.byteOffset + 4 * j));
+                    posB = *(reinterpret_cast<const uint32_t*>(bufferIndices.data() +
+                            bufferViewIndices.byteOffset + 4 * (j + 1)));
+                    posC = *(reinterpret_cast<const uint32_t*>(bufferIndices.data() +
+                            bufferViewIndices.byteOffset + 4 * (j + 2)));
+                } else {
+                    throw runtime_error("Unsupported accessor component type, expected 5123 or 5125");
+                }
+
+                glm::vec4 a {points[posA].x, points[posA].y, points[posA].z, 1.f};
+                glm::vec4 b {points[posB].x, points[posB].y, points[posB].z, 1.f};
+                glm::vec4 c {points[posC].x, points[posC].y, points[posC].z, 1.f};
+                const glm::mat4x4 &m = transitions[i];
+
+                a = m * a;
+                b = m * b;
+                c = m * c;
+
+                shared_ptr<Triangle> triangle(new Triangle(a.x, a.y, a.z,
+                                                           b.x, b.y, b.z,
+                                                           c.x, c.y, c.z));
+                triangle->material = materials[primitive.material];
+                triangle->update();
+
+                inputData.primitives.push_back(triangle);
+                if (glm::length(triangle->material->emission) > EPS) {
+                    inputData.lights.push_back(triangle.get());
+                }
+            }
+        }
+    }
+
     inputFile.close();
-    if (lastPrimitive != nullptr) {
-        inputData.primitives.push_back(lastPrimitive);
-        lastPrimitive->update();
-        if (glm::length(lastPrimitive->emission) > EPS && !lastPrimitive->isPlane) {
-            inputData.lights.push_back(lastPrimitive.get());
-        }
-    }
-    inputData.cameraFovTan.y = inputData.cameraFovTan.x * float(inputData.height) / float(inputData.width);
+    inputData.cameraFovTan.x = inputData.cameraFovTan.y * float(inputData.width) / float(inputData.height);
     inputData.bvh = BVH{};
     inputData.bvh.build(inputData.primitives);
 
@@ -950,22 +1118,23 @@ glm::vec3 applyLightDiffuser(
     float p = dis.pdf(w);
     float wn = glm::dot(w, intersection.normal);
     if (wn < 0.f || p < EPS) {
-        return intersection.primitive->emission;
+        return intersection.primitive->material->emission;
     }
     Intersection nextIntersection = intersectScene(intersection.pPlusNormalEps, w, inputData);
     glm::vec3 l = applyLight(nextIntersection, inputData, rayDepth - 1, RNG);
-    return intersection.primitive->color * l * glm::one_over_pi<float>() * wn / p + intersection.primitive->emission;
+    return intersection.primitive->material->color * l * glm::one_over_pi<float>() * wn / p
+        + intersection.primitive->material->emission;
 }
 
 glm::vec3 applyLightMetallic(
         const Intersection &intersection, const InputData &inputData, const uint16_t &rayDepth, minstd_rand &RNG) {
     glm::vec3 reflectedColor = getReflectedLight(intersection, inputData, rayDepth, RNG);
-    return intersection.primitive->color * reflectedColor + intersection.primitive->emission;
+    return intersection.primitive->material->color * reflectedColor + intersection.primitive->material->emission;
 }
 
 glm::vec3 applyLightDielectric(
         const Intersection &intersection, const InputData &inputData, const uint16_t &rayDepth, minstd_rand &RNG) {
-    float n1 = 1., n2 = intersection.primitive->ior;
+    float n1 = 1., n2 = intersection.primitive->material->ior;
     if (intersection.isInside) {
         n1 = n2;
         n2 = 1.;
@@ -975,7 +1144,8 @@ glm::vec3 applyLightDielectric(
     float s = n12 * glm::sqrt(1.f - nl * nl);
 
     if (s > 1.f) {
-        return getReflectedLight(intersection, inputData, rayDepth, RNG) + intersection.primitive->emission;
+        return getReflectedLight(intersection, inputData, rayDepth, RNG) +
+            intersection.primitive->material->emission;
     }
 
     float r0 = (n1 - n2) / (n1 + n2);
@@ -985,7 +1155,8 @@ glm::vec3 applyLightDielectric(
     float r = r0 + (1.f - r0) * mnlsq * mnlsq * mnl;
 
     if (sampleUniform(RNG) < r) {
-        return getReflectedLight(intersection, inputData, rayDepth, RNG) + intersection.primitive->emission;
+        return getReflectedLight(intersection, inputData, rayDepth, RNG) +
+            intersection.primitive->material->emission;
     }
 
     glm::vec3 rd = n12 * intersection.d + (n12 * nl - glm::sqrt(1 - s * s)) * intersection.normal;
@@ -994,10 +1165,10 @@ glm::vec3 applyLightDielectric(
     glm::vec3 refractedColor = applyLight(refractedIntersection, inputData, rayDepth - 1, RNG);
 
     if (!intersection.isInside) {
-        refractedColor *= intersection.primitive->color;
+        refractedColor *= intersection.primitive->material->color;
     }
 
-    return refractedColor + intersection.primitive->emission;
+    return refractedColor + intersection.primitive->material->emission;
 }
 
 glm::vec3 applyLight(
@@ -1010,14 +1181,14 @@ glm::vec3 applyLight(
     if (rayDepth == 0) {
         return color;
     } else if (rayDepth == 1) {
-        return intersection.primitive->emission;
+        return intersection.primitive->material->emission;
     }
 
-    if (intersection.primitive->material == Material::DIFFUSER) {
+    if (intersection.primitive->material->material == Material::DIFFUSER) {
         color = applyLightDiffuser(intersection, inputData, rayDepth, RNG);
-    } else if (intersection.primitive->material == Material::METALLIC) {
+    } else if (intersection.primitive->material->material == Material::METALLIC) {
         color = applyLightMetallic(intersection, inputData, rayDepth, RNG);
-    } else if (intersection.primitive->material == Material::DIELECTRIC) {
+    } else if (intersection.primitive->material->material == Material::DIELECTRIC) {
         color = applyLightDielectric(intersection, inputData, rayDepth, RNG);
     }
 
@@ -1060,9 +1231,11 @@ int main(int, char *argv[]) {
     double start = omp_get_wtime();;
 
     string inputPath = argv[1];
-    string outputPath = argv[2];
+    string outputPath = argv[5];
 
-    InputData inputData = parseInput(inputPath);
+    InputData inputData = parseGLTF(inputPath, stoi(argv[2]), stoi(argv[3]));
+    inputData.samples = stoi(argv[4]);
+
     SceneFloat scene = generateScene(inputData);
 
     printImage(scene, outputPath);
