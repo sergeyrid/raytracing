@@ -1004,7 +1004,6 @@ InputData parseGLTF(string &inputPath, uint32_t width, uint32_t height) {
             for (int8_t i = 0; i < 16; ++i) {
                 transition[i % 4][i / 4] = node["matrix"][i];
             }
-            transition = glm::mat4x4(node["matrix"]);
         }
 
         transitions.push_back(transition);
