@@ -871,6 +871,7 @@ InputData parseGLTF(string &inputPath, uint32_t width, uint32_t height) {
     inputData.width = width;
     inputData.height = height;
 
+    cout << "Getting buffers" << endl;
     vector<vector<char>> buffers;
     for (const auto &buffer: data["buffers"]) {
         uint32_t bufferSize = buffer["byteLength"];
@@ -881,6 +882,7 @@ InputData parseGLTF(string &inputPath, uint32_t width, uint32_t height) {
         buffers.push_back(bufferData);
     }
 
+    cout << "Getting bufferViews" << endl;
     vector<BufferView> bufferViews;
     for (const auto &bufferView: data["bufferViews"]) {
         BufferView bufferViewData{};
@@ -890,6 +892,7 @@ InputData parseGLTF(string &inputPath, uint32_t width, uint32_t height) {
         bufferViews.push_back(bufferViewData);
     }
 
+    cout << "Getting materials" << endl;
     vector<shared_ptr<MaterialData>>materials;
     for (const auto &material: data["materials"]) {
         shared_ptr<MaterialData> materialData(new MaterialData);
@@ -926,6 +929,7 @@ InputData parseGLTF(string &inputPath, uint32_t width, uint32_t height) {
         materials.push_back(materialData);
     }
 
+    cout << "Getting meshes" << endl;
     vector<vector<GLTFPrimitive>> meshes;
     for (const auto &mesh: data["meshes"]) {
         vector<GLTFPrimitive> meshData;
@@ -939,6 +943,7 @@ InputData parseGLTF(string &inputPath, uint32_t width, uint32_t height) {
         meshes.push_back(meshData);
     }
 
+    cout << "Getting accessors" << endl;
     vector<Accessor> accessors;
     for (const auto &accessor: data["accessors"]) {
         Accessor accessorData{};
@@ -952,6 +957,7 @@ InputData parseGLTF(string &inputPath, uint32_t width, uint32_t height) {
         accessors.push_back(accessorData);
     }
 
+    cout << "Getting nodes" << endl;
     vector<shared_ptr<Primitive>> primitives;
     vector<glm::mat4x4> transitions;
     vector<vector<uint16_t>> children;
@@ -1016,12 +1022,14 @@ InputData parseGLTF(string &inputPath, uint32_t width, uint32_t height) {
         }
     }
 
+    cout << "Fixing transitions" << endl;
     for (size_t i = 0; i < transitions.size(); ++i) {
         for (const auto &child: children[i]) {
             transitions[child] = transitions[i] * transitions[child];
         }
     }
 
+    cout << "Getting primitives" << endl;
     for (size_t i = 0; i < transitions.size(); ++i) {
         if (!data["nodes"][i].contains("mesh")) {
             continue;
