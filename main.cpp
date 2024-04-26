@@ -1000,7 +1000,8 @@ InputData parseGLTF(string &inputPath, uint32_t width, uint32_t height) {
         transitions.push_back(transition);
 
         if (node.contains("children")) {
-            children.emplace_back(node["children"]);
+            cout << "Adding children" << endl;
+            children.push_back(node["children"]);
         } else {
             children.emplace_back();
         }
