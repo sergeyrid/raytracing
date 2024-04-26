@@ -1000,6 +1000,10 @@ InputData parseGLTF(string &inputPath, uint32_t width, uint32_t height) {
         glm::mat4x4 transition = glm::transpose(scaleMat * rotationMatrix * translationMatrix);
 
         if (node.contains("matrix")) {
+            cout << "Getting matrix" << endl;
+            for (int8_t i = 0; i < 16; ++i) {
+                transition[i % 4][i / 4] = node["matrix"][i];
+            }
             transition = glm::mat4x4(node["matrix"]);
         }
 
