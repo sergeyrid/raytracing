@@ -941,11 +941,15 @@ InputData parseGLTF(string &inputPath, uint32_t width, uint32_t height) {
 
     vector<Accessor> accessors;
     for (const auto &accessor: data["accessors"]) {
-        accessors.emplace_back(accessor["bufferView"], accessor["count"],
-                               accessor["componentType"], accessor["type"], 0);
+        Accessor accessorData{};
+        accessorData.bufferView = accessor["bufferView"];
+        accessorData.count = accessor["count"];
+        accessorData.componentType = accessor["componentType"];
+        accessorData.type = accessor["type"];
         if (accessor.contains("byteOffset")) {
-            accessors[accessors.size() - 1].byteOffset = accessor["byteOffset"];
+            accessorData.byteOffset = accessor["byteOffset"];
         }
+        accessors.push_back(accessorData);
     }
 
     vector<shared_ptr<Primitive>> primitives;
