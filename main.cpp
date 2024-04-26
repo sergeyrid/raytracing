@@ -883,8 +883,11 @@ InputData parseGLTF(string &inputPath, uint32_t width, uint32_t height) {
 
     vector<BufferView> bufferViews;
     for (const auto &bufferView: data["bufferViews"]) {
-        bufferViews.emplace_back(
-                bufferView["buffer"], bufferView["byteLength"], bufferView["byteOffset"]);
+        BufferView bufferViewData{};
+        bufferViewData.buffer = bufferView["buffer"];
+        bufferViewData.byteLength = bufferView["byteLength"];
+        bufferViewData.byteOffset = bufferView["byteOffset"];
+        bufferViews.push_back(bufferViewData);
     }
 
     vector<shared_ptr<MaterialData>>materials;
@@ -927,8 +930,11 @@ InputData parseGLTF(string &inputPath, uint32_t width, uint32_t height) {
     for (const auto &mesh: data["meshes"]) {
         vector<GLTFPrimitive> meshData;
         for (const auto &primitive: mesh["primitives"]) {
-            meshData.emplace_back(primitive["attributes"]["POSITION"],
-                                  primitive["indices"], primitive["material"]);
+            GLTFPrimitive primitiveData{};
+            primitiveData.position = primitive["attributes"]["POSITION"];
+            primitiveData.indices = primitive["indices"];
+            primitiveData.material = primitive["material"];
+            meshData.push_back(primitiveData);
         }
         meshes.push_back(meshData);
     }
